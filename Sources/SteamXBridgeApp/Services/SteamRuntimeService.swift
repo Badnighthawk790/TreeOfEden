@@ -43,9 +43,15 @@ struct SteamRuntimeService {
     func queueBackgroundLaunch(profile: LaunchProfile, runtimeBinary: String) throws {
         guard profile.isValid else { throw LaunchError.invalidProfile }
 
-        let request = shouldLaunchWithSteamURL(profile)
-            ? "open steam://rungameid/\(profile.steamAppID.shellEscapedURL)"
-            : generateLaunchScript(profile: profile, runtimeBinary: runtimeBinary)
+        let command: String
+        if shouldLaunchWithSteamURL(profile) {
+            command = "open steam://rungameid/\(profile.steamAppID.shellEscapedURL)"
+        } else {
+            guard !runtimeBinary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw LaunchError.unsupportedRuntime
+            }
+            command = generateLaunchCommand(profile: profile, runtimeBinary: runtimeBinary)
+        }
 
         let requestURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/SteamXBridge/launch-request.sh")
@@ -56,12 +62,25 @@ struct SteamRuntimeService {
             attributes: nil
         )
 
-        let content = "#!/bin/zsh\nset -e\n\(request)\n"
+        let content = """
+        #!/bin/zsh
+        set -e
+        \(command)
+        """
         try content.write(to: requestURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: requestURL.path)
     }
 
     func generateLaunchScript(profile: LaunchProfile, runtimeBinary: String) -> String {
+        """
+        #!/bin/zsh
+        set -e
+
+        \(generateLaunchCommand(profile: profile, runtimeBinary: runtimeBinary))
+        """
+    }
+
+    func generateLaunchCommand(profile: LaunchProfile, runtimeBinary: String) -> String {
         let envExports = profile.launchEnvironment
             .sorted(by: { $0.key < $1.key })
             .map { "export \($0.key)=\($0.value.shellEscaped)" }
@@ -74,9 +93,6 @@ struct SteamRuntimeService {
         let nicePrefix = profile.lowResourceMode ? "nice -n 15 " : ""
 
         return """
-        #!/bin/zsh
-        set -e
-
         export WINEPREFIX=\(winePrefix.shellEscaped)
         mkdir -p "$WINEPREFIX"
 

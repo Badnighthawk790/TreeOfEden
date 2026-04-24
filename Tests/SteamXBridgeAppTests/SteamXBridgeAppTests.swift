@@ -39,6 +39,17 @@ final class SteamXBridgeAppTests: XCTestCase {
         XCTAssertEqual(env["DXVK_FRAME_RATE"], "60")
     }
 
+    func testGenerateLaunchCommandHasNoShebang() {
+        let profile = LaunchProfile(name: "Command", gameExecutablePath: "/Games/cmd.exe")
+        let command = SteamRuntimeService().generateLaunchCommand(
+            profile: profile,
+            runtimeBinary: "/Applications/Whisky.app/Contents/Resources/wine/bin/wine64"
+        )
+
+        XCTAssertFalse(command.contains("#!/bin/zsh"))
+        XCTAssertTrue(command.contains("export WINEPREFIX"))
+    }
+
     func testLaunchScriptContainsRuntimeAndExecutable() {
         let profile = LaunchProfile(name: "Halo MCC", gameExecutablePath: "/Games/HaloMCC.exe")
         let script = SteamRuntimeService().generateLaunchScript(
