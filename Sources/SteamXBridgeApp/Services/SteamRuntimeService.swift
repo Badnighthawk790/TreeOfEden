@@ -40,9 +40,9 @@ struct SteamRuntimeService {
             .map { "export \($0.key)=\($0.value.shellEscaped)" }
             .joined(separator: "\n")
 
-        let winePrefix = profile.protonPrefixPath.isEmpty
+        let winePrefix = profile.winePrefixPath.isEmpty
             ? "$HOME/.steamxbridge/prefixes/\(profile.name.replacingOccurrences(of: " ", with: "_"))"
-            : profile.protonPrefixPath
+            : profile.winePrefixPath
 
         return """
         #!/bin/zsh

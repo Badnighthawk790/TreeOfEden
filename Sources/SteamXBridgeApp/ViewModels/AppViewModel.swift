@@ -10,6 +10,16 @@ final class AppViewModel: ObservableObject {
 
     private let service = SteamRuntimeService()
 
+    /// Known-compatibility entry for the current game, if any.
+    var compatibility: GameCompatibility.Entry? {
+        GameCompatibility.lookup(appID: profile.steamAppID, name: profile.name)
+    }
+
+    func applyPreset(_ preset: PerformancePreset) {
+        preset.apply(to: &profile)
+        statusMessage = "Applied \(preset.displayName) preset."
+    }
+
     func launchGame() {
         do {
             try service.launch(profile: profile, runtimeBinary: runtimeBinary)
