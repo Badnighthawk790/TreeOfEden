@@ -12,6 +12,7 @@ What *does* work well are single-player and anti-cheat-free titles. Expect a ste
 
 ## What it does
 
+- **Scans your installed Steam library** (`libraryfolders.vdf` + `appmanifest_*.acf`, including external drives) and creates a tuned profile in one click, guessing the game's `.exe`.
 - Saves per-game launch profiles as JSON.
 - Lets you choose the **translation backend**: Apple Game Porting Toolkit (D3DMetal) or Wine + DXVK (MoltenVK).
 - Emits only the environment variables that apply to the chosen backend (msync, DXVK, MoltenVK, Rosetta AVX, Metal HUD, Wine FSR, …).
@@ -60,12 +61,10 @@ Then install by dragging `SteamXBridge.app` into `/Applications`.
 
 1. Install Steam for macOS.
 2. Install a runtime: Apple's Game Porting Toolkit, **CrossOver**, or **Whisky**.
-3. In SteamXBridge, set:
-   - **Runtime binary**: path to `wine64` from your runtime.
-   - **Game executable path**: the Windows `.exe` inside your Steam library/prefix.
-   - **Backend**: Game Porting Toolkit (D3DMetal) for most modern games.
-4. Click the **Balanced 60** preset, then tune the render scale and upscaler.
-5. Keep macOS Low Power Mode **off** while gaming, and prefer a 60 FPS cap to keep the fanless Air from throttling.
+3. In SteamXBridge, click **Scan** under *Steam library*, pick a game, and **Create profile** — it fills in the name, App ID, and a best-guess `.exe`.
+4. Set the **Runtime binary** (path to `wine64` from your runtime) and confirm the **Backend** (Game Porting Toolkit for most modern games).
+5. Click the **Balanced 60** preset, then tune the render scale and upscaler.
+6. Keep macOS Low Power Mode **off** while gaming, and prefer a 60 FPS cap to keep the fanless Air from throttling.
 
 ## Profile JSON schema (example)
 

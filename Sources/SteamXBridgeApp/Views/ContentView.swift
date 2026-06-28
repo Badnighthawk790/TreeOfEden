@@ -14,9 +14,8 @@ struct ContentView: View {
                     compatibilityBanner(compat)
                 }
 
-                gameSection
-                translationSection
-                performanceSection
+                steamLibrarySection
+                configSections
 
                 guidanceSection
                 customEnvSection
@@ -77,6 +76,41 @@ struct ContentView: View {
         .padding(12)
         .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(tint.opacity(0.5)))
+    }
+
+    private var steamLibrarySection: some View {
+        GroupBox("Steam library") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Scan your installed Steam games and create a tuned profile in one click.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField("Steam path", text: $viewModel.steamRootPath)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Scan") { viewModel.scanSteamLibrary() }
+                }
+                if !viewModel.discoveredApps.isEmpty {
+                    HStack {
+                        Picker("Installed game", selection: $viewModel.selectedAppID) {
+                            Text("Select…").tag(String?.none)
+                            ForEach(viewModel.discoveredApps) { app in
+                                Text(app.name).tag(Optional(app.appID))
+                            }
+                        }
+                        Button("Create profile") { viewModel.useSelectedApp() }
+                            .disabled(viewModel.selectedAppID == nil)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var configSections: some View {
+        gameSection
+        translationSection
+        performanceSection
     }
 
     private var gameSection: some View {
