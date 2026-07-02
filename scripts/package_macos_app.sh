@@ -5,6 +5,10 @@ APP_NAME="SteamXBridge"
 BUNDLE_ID="com.stemnet.steamxbridge"
 MIN_MACOS="14.0"
 CONFIGURATION="release"
+# Overridable by the release workflow (e.g. from a git tag). Defaults keep local
+# packaging working with no arguments.
+APP_VERSION="${APP_VERSION:-1.0.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_DIR="${DIST_DIR}/${APP_NAME}.app"
@@ -56,9 +60,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${BUILD_NUMBER}</string>
   <key>LSMinimumSystemVersion</key>
   <string>${MIN_MACOS}</string>
   <key>NSHighResolutionCapable</key>

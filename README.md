@@ -57,6 +57,45 @@ This creates:
 
 Then install by dragging `SteamXBridge.app` into `/Applications`.
 
+## Run and build for release
+
+All commands require **macOS 14+** with the Swift toolchain (Xcode or Command Line Tools); the SwiftUI/AppKit app cannot be built on Linux.
+
+**Run locally (development):**
+
+```bash
+swift run                 # launch the app
+swift test                # run the unit tests
+```
+
+**Compile a release binary:**
+
+```bash
+swift build -c release    # optimized build in .build/release/
+```
+
+**Package a release `.app` you can ship:**
+
+```bash
+# Optional: stamp a version into the bundle (defaults to 1.0.0 / build 1)
+APP_VERSION=1.2.3 BUILD_NUMBER=42 ./scripts/package_macos_app.sh
+```
+
+This produces `dist/SteamXBridge.app` (ad-hoc signed) and `dist/SteamXBridge-macOS.zip`.
+
+**Cut a release through the release channel (recommended):**
+
+Push a version tag and CI builds, packages, and publishes a downloadable GitHub Release automatically:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The [`Release macOS app`](.github/workflows/release.yml) workflow runs on Apple Silicon runners, stamps the tag version into the bundle, and attaches `SteamXBridge-macOS.zip` to the release. You can also trigger it manually from the **Actions** tab (*Run workflow* → enter a version). Every push to the branch is also built by [`Build macOS app`](.github/workflows/build-macos.yml), which uploads the packaged app as a run artifact.
+
+> First launch: the app is ad-hoc signed (not notarized), so Gatekeeper blocks a downloaded copy. Right-click → **Open**, or run `xattr -dr com.apple.quarantine SteamXBridge.app`.
+
 ## Typical setup on an M2 MacBook Air
 
 1. Install Steam for macOS.

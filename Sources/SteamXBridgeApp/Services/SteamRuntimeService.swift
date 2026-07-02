@@ -26,7 +26,9 @@ struct SteamRuntimeService {
             .appendingPathComponent("steamxbridge-\(profile.id.uuidString).command")
 
         try launchScript.write(to: scriptURL, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        // Owner-only: the rendered script embeds the resolved environment, which may
+        // include values the user placed in customEnv. Keep it off other accounts.
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -40,8 +42,11 @@ struct SteamRuntimeService {
             .map { "export \($0.key)=\($0.value.shellEscaped)" }
             .joined(separator: "\n")
 
+        // Resolve HOME in Swift: the value is shell-escaped below, so a literal
+        // "$HOME" would not expand and would create a directory named "$HOME".
+        let defaultPrefixRoot = NSHomeDirectory() + "/.steamxbridge/prefixes"
         let winePrefix = profile.winePrefixPath.isEmpty
-            ? "$HOME/.steamxbridge/prefixes/\(profile.name.replacingOccurrences(of: " ", with: "_"))"
+            ? "\(defaultPrefixRoot)/\(profile.name.replacingOccurrences(of: " ", with: "_"))"
             : profile.winePrefixPath
 
         return """

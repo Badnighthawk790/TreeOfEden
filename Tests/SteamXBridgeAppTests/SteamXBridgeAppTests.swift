@@ -176,4 +176,40 @@ final class SteamXBridgeAppTests: XCTestCase {
         XCTAssertTrue(candidates.contains { $0.hasSuffix("Game.exe") })
         XCTAssertFalse(candidates.contains { $0.lowercased().contains("vcredist") })
     }
+
+    func testEnvNameValidation() {
+        XCTAssertTrue(LaunchProfile.isValidEnvName("DXVK_HUD"))
+        XCTAssertTrue(LaunchProfile.isValidEnvName("_x1"))
+        XCTAssertFalse(LaunchProfile.isValidEnvName(""))
+        XCTAssertFalse(LaunchProfile.isValidEnvName("1ABC"))
+        XCTAssertFalse(LaunchProfile.isValidEnvName("A B"))
+        XCTAssertFalse(LaunchProfile.isValidEnvName("A;B"))
+    }
+
+    func testMaliciousCustomEnvKeyIsRejected() {
+        let profile = LaunchProfile(
+            name: "Test",
+            gameExecutablePath: "/g.exe",
+            customEnv: "GOOD_KEY=1\nFOO; rm -rf ~ ; X=2\nBAD-KEY=3\n$(evil)=4"
+        )
+        let env = profile.launchEnvironment
+        XCTAssertEqual(env["GOOD_KEY"], "1")
+        XCTAssertNil(env["FOO; rm -rf ~ ; X"])
+        XCTAssertNil(env["BAD-KEY"])
+        // No key should carry shell metacharacters into the generated script.
+        XCTAssertFalse(env.keys.contains { $0.contains(";") || $0.contains("$") || $0.contains("-") || $0.contains(" ") })
+    }
+
+    func testVDFTreatsQuotedBracesAsLiterals() {
+        let text = """
+        "root"
+        {
+            "a"  "{"
+            "b"  "value"
+        }
+        """
+        let node = VDFParser.parse(text)
+        XCTAssertEqual(node["root"]?["a"]?.stringValue, "{")
+        XCTAssertEqual(node["root"]?["b"]?.stringValue, "value")
+    }
 }

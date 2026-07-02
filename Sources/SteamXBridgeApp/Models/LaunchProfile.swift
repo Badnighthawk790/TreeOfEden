@@ -158,12 +158,29 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
 
         for line in customEnv.split(separator: "\n") {
             let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
-            if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
-                env[parts[0].trimmingCharacters(in: .whitespaces)] = parts[1].trimmingCharacters(in: .whitespaces)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces)
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            // The key is emitted unescaped into the generated shell script, so only
+            // accept legal env identifiers — this prevents a crafted custom key such
+            // as `FOO; rm -rf ~` from injecting commands.
+            if Self.isValidEnvName(key), !value.isEmpty {
+                env[key] = value
             }
         }
 
         return env
+    }
+
+    /// True when `name` is a legal environment-variable identifier: an ASCII
+    /// letter or underscore followed by ASCII letters, digits, or underscores.
+    static func isValidEnvName(_ name: String) -> Bool {
+        let scalars = Array(name.unicodeScalars)
+        guard let first = scalars.first else { return false }
+        func isAlpha(_ v: UInt32) -> Bool { (v >= 65 && v <= 90) || (v >= 97 && v <= 122) || v == 95 }
+        func isDigit(_ v: UInt32) -> Bool { v >= 48 && v <= 57 }
+        guard isAlpha(first.value) else { return false }
+        return scalars.allSatisfy { isAlpha($0.value) || isDigit($0.value) }
     }
 
     /// Configuration mistakes that would prevent the chosen settings from working.

@@ -32,24 +32,28 @@ struct SteamLibraryScanner {
     /// (object) and legacy (string) formats.
     func libraryRoots() -> [URL] {
         var roots: [URL] = []
+        func addRoot(_ path: String) {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            if !roots.contains(where: { $0.standardizedFileURL == url }) {
+                roots.append(url)
+            }
+        }
+
         let vdfURL = steamRoot.appendingPathComponent("steamapps/libraryfolders.vdf")
         if let text = try? String(contentsOf: vdfURL, encoding: .utf8) {
             let node = VDFParser.parse(text)
             if let folders = node["libraryfolders"]?.objectValue {
                 for (key, value) in folders {
                     if let path = value["path"]?.stringValue {
-                        roots.append(URL(fileURLWithPath: path))
+                        addRoot(path)
                     } else if let path = value.stringValue, Int(key) != nil {
-                        roots.append(URL(fileURLWithPath: path))
+                        addRoot(path)
                     }
                 }
             }
         }
 
-        let standardizedRoot = steamRoot.standardizedFileURL
-        if !roots.contains(where: { $0.standardizedFileURL == standardizedRoot }) {
-            roots.append(steamRoot)
-        }
+        addRoot(steamRoot.path)
         return roots
     }
 

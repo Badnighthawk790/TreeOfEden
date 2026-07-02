@@ -37,37 +37,41 @@ struct VDFParser {
         return parser.parseObject()
     }
 
+    private enum Token {
+        case open           // structural {
+        case close          // structural }
+        case value(String)  // quoted or bare string
+    }
+
     private mutating func parseObject() -> VDFNode {
         var dict: [String: VDFNode] = [:]
-        while let key = readToken() {
-            if key == "}" { break }
-            if key == "{" { continue }
-            guard let value = readToken() else { break }
-            if value == "{" {
-                dict[key] = parseObject()
-            } else if value == "}" {
-                dict[key] = .string("")
-                break
-            } else {
-                dict[key] = .string(value)
+        loop: while let keyToken = readToken() {
+            let key: String
+            switch keyToken {
+            case .close: break loop
+            case .open: continue         // stray opening brace
+            case .value(let k): key = k
+            }
+            guard let valueToken = readToken() else { break }
+            switch valueToken {
+            case .open: dict[key] = parseObject()
+            case .close: dict[key] = .string(""); break loop
+            case .value(let v): dict[key] = .string(v)
             }
         }
         return .object(dict)
     }
 
-    /// Returns the next lexical token. Braces are returned as their own tokens.
-    private mutating func readToken() -> String? {
+    /// Returns the next lexical token. Only *unquoted* braces are structural; a
+    /// quoted "{"/"}" is a literal string value (Valve's format allows this).
+    private mutating func readToken() -> Token? {
         skipWhitespaceAndComments()
         guard index < chars.count else { return nil }
 
         let c = chars[index]
-        if c == "{" || c == "}" {
-            index += 1
-            return String(c)
-        }
-        if c == "\"" {
-            return readQuotedString()
-        }
+        if c == "{" { index += 1; return .open }
+        if c == "}" { index += 1; return .close }
+        if c == "\"" { return .value(readQuotedString()) }
 
         var token = ""
         while index < chars.count {
@@ -76,7 +80,7 @@ struct VDFParser {
             token.append(ch)
             index += 1
         }
-        return token
+        return .value(token)
     }
 
     private mutating func readQuotedString() -> String {
