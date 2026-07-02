@@ -12,6 +12,9 @@ final class AppViewModel: ObservableObject {
     @Published var discoveredApps: [SteamApp] = []
     @Published var selectedAppID: String?
 
+    /// Detected once at startup; the chip does not change while running.
+    let gpu = GPUStack.detect()
+
     private let service = SteamRuntimeService()
 
     /// Known-compatibility entry for the current game, if any.
@@ -59,7 +62,7 @@ final class AppViewModel: ObservableObject {
 
     func launchGame() {
         do {
-            try service.launch(profile: profile, runtimeBinary: runtimeBinary)
+            try service.launch(profile: profile, runtimeBinary: runtimeBinary, gpu: gpu)
             statusMessage = "Launch script started for \(profile.name)."
         } catch {
             statusMessage = error.localizedDescription

@@ -15,13 +15,13 @@ enum LaunchError: LocalizedError {
 }
 
 struct SteamRuntimeService {
-    func launch(profile: LaunchProfile, runtimeBinary: String) throws {
+    func launch(profile: LaunchProfile, runtimeBinary: String, gpu: GPUStack = .detect()) throws {
         guard profile.isValid else { throw LaunchError.invalidProfile }
         guard !runtimeBinary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LaunchError.unsupportedRuntime
         }
 
-        let launchScript = generateLaunchScript(profile: profile, runtimeBinary: runtimeBinary)
+        let launchScript = generateLaunchScript(profile: profile, runtimeBinary: runtimeBinary, gpu: gpu)
         let scriptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("steamxbridge-\(profile.id.uuidString).command")
 
@@ -36,8 +36,8 @@ struct SteamRuntimeService {
         try process.run()
     }
 
-    func generateLaunchScript(profile: LaunchProfile, runtimeBinary: String) -> String {
-        let envExports = profile.launchEnvironment
+    func generateLaunchScript(profile: LaunchProfile, runtimeBinary: String, gpu: GPUStack = .detect()) -> String {
+        let envExports = profile.launchEnvironment(gpu: gpu)
             .sorted(by: { $0.key < $1.key })
             .map { "export \($0.key)=\($0.value.shellEscaped)" }
             .joined(separator: "\n")

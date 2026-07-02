@@ -76,6 +76,13 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
     var useAsyncShaders: Bool
     var frameLimit: Int
     var showFPSOverlay: Bool
+    /// Enables the software levers that approximate M3/M4 GPU-stack gains on
+    /// older chips: Metal argument buffers, prefilled command buffers,
+    /// heap-backed memory, and parallel shader compilation.
+    var useChipOptimizations: Bool
+    /// User intent to enable DXR translation. Only honored when the chip has
+    /// hardware ray tracing (M3/M4); forced off on M1/M2.
+    var allowRayTracing: Bool
     var customEnv: String
 
     init(
@@ -91,6 +98,8 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
         useAsyncShaders: Bool = true,
         frameLimit: Int = 60,
         showFPSOverlay: Bool = false,
+        useChipOptimizations: Bool = true,
+        allowRayTracing: Bool = false,
         customEnv: String = ""
     ) {
         self.id = id
@@ -105,7 +114,30 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
         self.useAsyncShaders = useAsyncShaders
         self.frameLimit = frameLimit
         self.showFPSOverlay = showFPSOverlay
+        self.useChipOptimizations = useChipOptimizations
+        self.allowRayTracing = allowRayTracing
         self.customEnv = customEnv
+    }
+
+    /// Decodes with per-field defaults so profiles saved by older versions of
+    /// the app (before a field existed) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        steamAppID = try c.decodeIfPresent(String.self, forKey: .steamAppID) ?? ""
+        gameExecutablePath = try c.decodeIfPresent(String.self, forKey: .gameExecutablePath) ?? ""
+        winePrefixPath = try c.decodeIfPresent(String.self, forKey: .winePrefixPath) ?? ""
+        backend = try c.decodeIfPresent(TranslationBackend.self, forKey: .backend) ?? .gptkD3DMetal
+        upscaler = try c.decodeIfPresent(Upscaler.self, forKey: .upscaler) ?? .metalFX
+        resolutionScalePercent = try c.decodeIfPresent(Int.self, forKey: .resolutionScalePercent) ?? 77
+        syncPrimitive = try c.decodeIfPresent(SyncPrimitive.self, forKey: .syncPrimitive) ?? .msync
+        useAsyncShaders = try c.decodeIfPresent(Bool.self, forKey: .useAsyncShaders) ?? true
+        frameLimit = try c.decodeIfPresent(Int.self, forKey: .frameLimit) ?? 60
+        showFPSOverlay = try c.decodeIfPresent(Bool.self, forKey: .showFPSOverlay) ?? false
+        useChipOptimizations = try c.decodeIfPresent(Bool.self, forKey: .useChipOptimizations) ?? true
+        allowRayTracing = try c.decodeIfPresent(Bool.self, forKey: .allowRayTracing) ?? false
+        customEnv = try c.decodeIfPresent(String.self, forKey: .customEnv) ?? ""
     }
 
     var isValid: Bool {
@@ -119,9 +151,15 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
         min(max((100 - resolutionScalePercent) / 10, 0), 5)
     }
 
+    /// Environment for the host machine's detected chip.
+    var launchEnvironment: [String: String] {
+        launchEnvironment(gpu: .detect())
+    }
+
     /// Environment variables passed to the runtime. Only variables that actually
     /// apply to the selected backend are emitted; `customEnv` overrides everything.
-    var launchEnvironment: [String: String] {
+    /// Chip-dependent features (ray tracing) are gated on `gpu`.
+    func launchEnvironment(gpu: GPUStack) -> [String: String] {
         var env: [String: String] = [
             // Silence Wine logging to shave overhead off a fanless chip.
             "WINEDEBUG": "-all"
@@ -139,6 +177,16 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
             // Many modern titles probe for AVX/AVX2; Rosetta only advertises it on request.
             env["ROSETTA_ADVERTISE_AVX"] = "1"
             env["MTL_HUD_ENABLED"] = showFPSOverlay ? "1" : "0"
+            if useChipOptimizations {
+                // Make sure no Metal debug/validation overhead sneaks into the
+                // hot path launched from a GUI context.
+                env["MTL_SHADER_VALIDATION"] = "0"
+                env["MTL_DEBUG_LAYER"] = "0"
+            }
+            // DXR translation only pays off on chips with RT cores (M3/M4). On
+            // M1/M2 the software fallback collapses the frame rate, so it is
+            // forced off regardless of the user toggle.
+            env["D3DM_SUPPORT_DXR"] = (allowRayTracing && gpu.hasHardwareRayTracing) ? "1" : "0"
         case .wineDXVK:
             env["DXVK_ASYNC"] = useAsyncShaders ? "1" : "0"
             env["DXVK_STATE_CACHE"] = "1"
@@ -146,6 +194,17 @@ struct LaunchProfile: Codable, Equatable, Identifiable {
             env["DXVK_HUD"] = showFPSOverlay ? "fps,frametimes" : "0"
             env["MVK_CONFIG_RESUME_LOST_DEVICE"] = "1"
             env["MVK_CONFIG_FAST_MATH_ENABLED"] = "1"
+            if useChipOptimizations {
+                // The closest software stand-ins for M3/M4 hardware gains:
+                // argument buffers cut per-draw-call binding overhead,
+                env["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = "1"
+                // heap-backed allocations approximate hardware-managed memory,
+                env["MVK_CONFIG_USE_MTLHEAP"] = "1"
+                // immediate command-buffer encoding overlaps CPU/GPU work,
+                env["MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS"] = "2"
+                // and pipeline compiles fan out across all CPU cores.
+                env["MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION"] = "1"
+            }
         }
 
         // Wine's fullscreen FSR upscales the presented surface regardless of the D3D

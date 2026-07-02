@@ -200,6 +200,92 @@ final class SteamXBridgeAppTests: XCTestCase {
         XCTAssertFalse(env.keys.contains { $0.contains(";") || $0.contains("$") || $0.contains("-") || $0.contains(" ") })
     }
 
+    func testGPUBrandParsing() {
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M1").family, .m1)
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M2 Pro").family, .m2)
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M4 Max").family, .m4)
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M16").family, .unknown)
+        XCTAssertEqual(GPUStack.parse(brand: "VirtualApple @ 2.50GHz processor").family, .unknown)
+        XCTAssertEqual(GPUStack.parse(brand: "").family, .unknown)
+        XCTAssertEqual(GPUStack.parse(brand: "").marketingName, "Unknown CPU")
+    }
+
+    func testGPUCapabilityMatrix() {
+        let m2 = GPUStack.parse(brand: "Apple M2")
+        XCTAssertFalse(m2.hasHardwareRayTracing)
+        XCTAssertFalse(m2.hasDynamicCaching)
+        XCTAssertFalse(m2.hasHardwareMeshShading)
+        XCTAssertTrue(m2.supportsMetalFXTemporal)
+
+        let m4 = GPUStack.parse(brand: "Apple M4")
+        XCTAssertTrue(m4.hasHardwareRayTracing)
+        XCTAssertTrue(m4.hasDynamicCaching)
+        XCTAssertTrue(m4.hasHardwareMeshShading)
+    }
+
+    func testChipOptimizationsEmitDrawCallVarsOnDXVK() {
+        let profile = LaunchProfile(name: "T", gameExecutablePath: "/g.exe", backend: .wineDXVK)
+        let env = profile.launchEnvironment(gpu: GPUStack.parse(brand: "Apple M2"))
+        XCTAssertEqual(env["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"], "1")
+        XCTAssertEqual(env["MVK_CONFIG_USE_MTLHEAP"], "1")
+        XCTAssertEqual(env["MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS"], "2")
+        XCTAssertEqual(env["MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION"], "1")
+    }
+
+    func testChipOptimizationsCanBeDisabled() {
+        let profile = LaunchProfile(
+            name: "T",
+            gameExecutablePath: "/g.exe",
+            backend: .wineDXVK,
+            useChipOptimizations: false
+        )
+        let env = profile.launchEnvironment(gpu: GPUStack.parse(brand: "Apple M2"))
+        XCTAssertNil(env["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"])
+        XCTAssertNil(env["MVK_CONFIG_USE_MTLHEAP"])
+    }
+
+    func testRayTracingIsGatedByHardware() {
+        let profile = LaunchProfile(
+            name: "T",
+            gameExecutablePath: "/g.exe",
+            backend: .gptkD3DMetal,
+            allowRayTracing: true
+        )
+        // M2 has no RT cores: forced off even though the user asked for it.
+        XCTAssertEqual(profile.launchEnvironment(gpu: GPUStack.parse(brand: "Apple M2"))["D3DM_SUPPORT_DXR"], "0")
+        // M4 has RT cores: the user's toggle is honored.
+        XCTAssertEqual(profile.launchEnvironment(gpu: GPUStack.parse(brand: "Apple M4"))["D3DM_SUPPORT_DXR"], "1")
+
+        var noRT = profile
+        noRT.allowRayTracing = false
+        XCTAssertEqual(noRT.launchEnvironment(gpu: GPUStack.parse(brand: "Apple M4"))["D3DM_SUPPORT_DXR"], "0")
+    }
+
+    func testLegacyProfileJSONDecodesWithDefaults() throws {
+        // A profile saved before the GPU-stack fields existed.
+        let legacyJSON = """
+        {
+          "id": "A8F9E2C8-6D07-467C-863F-98D64A37CB33",
+          "name": "My Game",
+          "steamAppID": "123456",
+          "gameExecutablePath": "/g.exe",
+          "winePrefixPath": "",
+          "backend": "gptkD3DMetal",
+          "upscaler": "metalFX",
+          "resolutionScalePercent": 77,
+          "syncPrimitive": "msync",
+          "useAsyncShaders": true,
+          "frameLimit": 60,
+          "showFPSOverlay": false,
+          "customEnv": ""
+        }
+        """
+        let profile = try JSONDecoder().decode(LaunchProfile.self, from: Data(legacyJSON.utf8))
+        XCTAssertEqual(profile.name, "My Game")
+        XCTAssertTrue(profile.useChipOptimizations)
+        XCTAssertFalse(profile.allowRayTracing)
+    }
+
     func testVDFTreatsQuotedBracesAsLiterals() {
         let text = """
         "root"
