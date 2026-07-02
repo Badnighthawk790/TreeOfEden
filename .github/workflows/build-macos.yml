@@ -1,0 +1,36 @@
+name: Build macOS app
+
+# Builds and packages SteamXBridge.app on Apple Silicon macOS runners, since the
+# SwiftUI/AppKit app cannot be cross-compiled off macOS. The packaged app is
+# uploaded as a downloadable artifact on every push.
+
+on:
+  push:
+    branches:
+      - "claude/sweet-ptolemy-pp2mp5"
+      - "main"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon (arm64), same architecture as the M2 MacBook Air
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Package .app bundle
+        run: ./scripts/package_macos_app.sh
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamXBridge-macOS
+          path: dist/SteamXBridge-macOS.zip
+          if-no-files-found: error
