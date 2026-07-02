@@ -27,6 +27,24 @@ What *does* work well are single-player and anti-cheat-free titles. Expect a ste
 | **Game Porting Toolkit (D3DMetal)** *(default)* | Wine + Direct3D 11/12 → Metal, x86 via Rosetta 2 | Most modern D3D11/12 games on Apple Silicon |
 | **Wine + DXVK (MoltenVK)** | Direct3D → Vulkan → Metal | Older or Vulkan-native titles, fallback cases |
 
+## Chip-aware GPU optimizations (M1 → M4)
+
+SteamXBridge detects the host chip (M1/M2/M3/M4) and shows how each M4-era GPU feature maps onto your machine.
+
+> **Honesty first:** M3/M4 gains like **Dynamic Caching**, **hardware ray tracing**, and **hardware mesh shading** are physical silicon. Software cannot emulate them into existence on an M1/M2 — emulating hardware in software is slower, not faster. What software *can* do is enable the levers that narrow the gap, and disable features that would fall onto a catastrophic non-hardware path.
+
+With **chip-aware draw-call optimizations** on (default), the app enables the closest software stand-ins:
+
+| M4 hardware feature | On M1/M2, SteamXBridge does |
+| --- | --- |
+| Dynamic Caching | Metal **argument buffers** + **heap-backed allocations** (`MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS`, `MVK_CONFIG_USE_MTLHEAP`) to cut per-draw-call binding and memory overhead |
+| Faster command processing | **Immediate command-buffer encoding** (`MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS`) to overlap CPU and GPU work |
+| Bigger shader throughput | **Parallel pipeline compilation** across all CPU cores (`MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION`); Metal debug/validation layers forced off |
+| Ray-tracing cores | **DXR translation forced off** (`D3DM_SUPPORT_DXR=0`) — on M1/M2 the software fallback collapses the frame rate. On M3/M4 a toggle enables it. |
+| Higher effective resolution | **MetalFX temporal upscaling / FSR** — render at ~60–77% and upscale; the main software lever for M4-class output from a smaller GPU |
+
+The MoltenVK (`MVK_*`) levers apply to the Wine + DXVK backend; the Metal and DXR levers apply to the Game Porting Toolkit backend.
+
 ## Upscaling
 
 - **MetalFX** — enabled via the D3DMetal backend; set it in your runtime's settings and pick a render scale below 100%.
@@ -121,6 +139,8 @@ The [`Release macOS app`](.github/workflows/release.yml) workflow runs on Apple 
   "useAsyncShaders": true,
   "frameLimit": 60,
   "showFPSOverlay": false,
+  "useChipOptimizations": true,
+  "allowRayTracing": false,
   "customEnv": "MTL_HUD_ENABLED=1"
 }
 ```

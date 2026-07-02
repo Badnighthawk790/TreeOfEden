@@ -110,7 +110,44 @@ struct ContentView: View {
     private var configSections: some View {
         gameSection
         translationSection
+        gpuSection
         performanceSection
+    }
+
+    private var gpuSection: some View {
+        GroupBox("GPU stack — \(viewModel.gpu.marketingName)") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(
+                    "Chip-aware draw-call optimizations (argument buffers, prefilled command buffers, heap memory, parallel shader compile)",
+                    isOn: $viewModel.profile.useChipOptimizations
+                )
+                Toggle("Ray tracing translation (requires M3/M4 RT cores)", isOn: $viewModel.profile.allowRayTracing)
+                    .disabled(!viewModel.gpu.hasHardwareRayTracing)
+                if !viewModel.gpu.hasHardwareRayTracing {
+                    Text("This Mac has no ray-tracing cores, so DXR stays off — the software fallback would collapse the frame rate rather than improve it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+                Text("M4 hardware features vs. this Mac")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(viewModel.gpu.featureStatuses) { row in
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: row.isHardware ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                            .foregroundStyle(row.isHardware ? Color.green : Color.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.feature)
+                                .font(.callout.weight(.medium))
+                            Text(row.status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 
     private var gameSection: some View {
