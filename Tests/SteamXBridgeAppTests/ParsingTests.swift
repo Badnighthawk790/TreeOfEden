@@ -165,3 +165,28 @@ final class WindowsCommandLineTests: XCTestCase {
         XCTAssertEqual(WindowsCommandLine.split("   "), [])
     }
 }
+
+final class GameCompatibilityTests: XCTestCase {
+    private func crossOver(_ version: String) -> WineEngine {
+        WineEngine(kind: .crossOver, name: "CrossOver \(version)", version: version, loaderPath: "/x/wine",
+                   wineserverPath: nil, bundlePath: nil, dxvkSourcePath: nil, architectures: [], features: [.d3dMetal])
+    }
+
+    func testHelldiversNeedsCrossOver26AndRecommends262() throws {
+        let entry = try XCTUnwrap(GameCompatibility.lookup(appID: "553850", name: nil))
+        XCTAssertNotNil(GameCompatibility.assessment(of: entry, engine: crossOver("25.1.1")))
+        XCTAssertNil(GameCompatibility.assessment(of: entry, engine: crossOver("26.0")))
+        XCTAssertNotNil(GameCompatibility.advisory(of: entry, engine: crossOver("26.1.0")))
+        XCTAssertNil(GameCompatibility.advisory(of: entry, engine: crossOver("26.3.0")))
+        let gptk = WineEngine(kind: .gamePortingToolkit, name: "GPTK", version: "3.0", loaderPath: "/g/wine64",
+                              wineserverPath: nil, bundlePath: nil, dxvkSourcePath: nil, architectures: [.x86_64], features: [.d3dMetal])
+        XCTAssertTrue(GameCompatibility.assessment(of: entry, engine: gptk)?.contains("create a new CrossOver bottle") == true)
+        XCTAssertFalse(entry.note.contains("including online play"), "online play is not promised")
+    }
+
+    func testLookupIsExactByAppIDAndNormalizedByName() {
+        XCTAssertNil(GameCompatibility.lookup(appID: "394510", name: "HELLDIVERS"), "the 2015 game has a different App ID")
+        XCTAssertEqual(GameCompatibility.lookup(appID: nil, name: "HELLDIVERS™ 2")?.appID, "553850")
+        XCTAssertNil(GameCompatibility.lookup(appID: nil, name: "Helldivers"))
+    }
+}

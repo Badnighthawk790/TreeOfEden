@@ -63,7 +63,7 @@ enum LaunchTarget: Equatable {
         switch self {
         case .program(let url, _, _): return url.lastPathComponent
         case .steamClient: return "Steam"
-        case .steamGame(let appID, _): return "Steam app \(appID)"
+        case .steamGame(let appID, _): return "Steam (game \(appID))"
         case .tool(let tool): return tool.displayName
         }
     }
@@ -80,7 +80,7 @@ enum LaunchPlanError: LocalizedError, Equatable {
         case .rosettaMissing:
             return "This engine needs Rosetta 2. Install it by running \"\(Rosetta.installCommand)\" in Terminal."
         case .crossOverBottleOutsideLibrary(let folder):
-            return "CrossOver can only run bottles in its Bottles folder (\(folder)). Choose a different engine for this bottle."
+            return "CrossOver can only run bottles in its Bottles folder (\(folder)). Move this bottle into that folder (or import it in CrossOver), then add it again from there."
         case .crossOverBottleNeedsCrossOver:
             return "This is a CrossOver bottle. Run it with a CrossOver engine; another Wine version would upgrade the prefix and can break it for CrossOver."
         case .unsupportedFile(let name):
@@ -134,18 +134,22 @@ struct LaunchPlanner {
     // MARK: Invocations
 
     /// The invocation for a program, Steam, a game or a Wine tool.
-    /// `logURL` receives Wine's own log for CrossOver (`--cx-log`).
-    func invocation(for target: LaunchTarget, wineLogURL: URL? = nil) throws -> WineInvocation {
+    /// `wineLogURL` receives Wine's own log for CrossOver (`--cx-log`).
+    /// `waitForChildren` keeps CrossOver's wrapper alive until every process the
+    /// program started has exited (installers hand off to child processes).
+    func invocation(for target: LaunchTarget, wineLogURL: URL? = nil, waitForChildren: Bool = false) throws -> WineInvocation {
         try validate()
         let (command, workingDirectory) = try windowsCommand(for: target)
         return try wrap(command, workingDirectory: workingDirectory, displayName: target.displayName,
-                        wineLogURL: wineLogURL, newConsole: target == .tool(.commandPrompt))
+                        wineLogURL: wineLogURL, newConsole: target == .tool(.commandPrompt),
+                        waitForChildren: waitForChildren)
     }
 
     /// A helper run in the bottle, such as `["wineboot", "--init"]` or `["reg", "add", ...]`.
     func helper(_ command: [String], displayName: String) throws -> WineInvocation {
         try validate()
-        return try wrap(command, workingDirectory: nil, displayName: displayName, wineLogURL: nil, newConsole: false)
+        return try wrap(command, workingDirectory: nil, displayName: displayName, wineLogURL: nil, newConsole: false,
+                        waitForChildren: false)
     }
 
     /// Stops every process in the bottle (CrossOver's "Force Quit").
@@ -184,14 +188,16 @@ struct LaunchPlanner {
             switch url.pathExtension.lowercased() {
             case "exe", "com":
                 return ([url.path] + arguments, folder)
-            case "msi":
-                return (["msiexec", "/i", url.path] + arguments, folder)
-            case "bat", "cmd":
-                return (["cmd", "/c", url.path] + arguments, folder)
-            case "lnk":
-                // Opened through Windows' shell so the shortcut's own target,
-                // arguments and working directory apply; /wait keeps the
+            case "msi", "bat", "cmd", "lnk":
+                // Opened through Windows' shell (ShellExecute): it runs msiexec
+                // for .msi, cmd for .bat/.cmd, and a shortcut's own target,
+                // arguments and working directory for .lnk. /wait keeps the
                 // process (and its log) alive until the program exits.
+                if engine.isCrossOver {
+                    // CrossOver's wrapper converts native paths in arguments,
+                    // which would clash with /unix; a Windows path is left alone.
+                    return (["start", "/wait", Self.windowsPath(forHostPath: url.path)] + arguments, folder)
+                }
                 return (["start", "/wait", "/unix", url.path] + arguments, folder)
             default:
                 throw LaunchPlanError.unsupportedFile(url.lastPathComponent)
@@ -216,10 +222,16 @@ struct LaunchPlanner {
         bottle.settings.steamCompatibilityFlags && !engine.isCrossOver ? Self.steamCompatibilityArguments : []
     }
 
+    /// A host path as Wine sees it through drive Z: (which maps to /).
+    static func windowsPath(forHostPath path: String) -> String {
+        "Z:" + path.replacingOccurrences(of: "/", with: "\\")
+    }
+
     private func wrap(_ command: [String], workingDirectory: URL?, displayName: String,
-                      wineLogURL: URL?, newConsole: Bool) throws -> WineInvocation {
+                      wineLogURL: URL?, newConsole: Bool, waitForChildren: Bool) throws -> WineInvocation {
         if engine.isCrossOver {
             var arguments = ["--bottle", try crossOverBottleName()]
+            if waitForChildren { arguments.append("--wait-children") }
             if let wineLogURL { arguments += ["--cx-log", wineLogURL.path] }
             if bottle.settings.debugLogging { arguments += ["--debugmsg", Self.debugChannels] }
             if newConsole { arguments.append("--new-console") }
@@ -259,9 +271,15 @@ struct LaunchPlanner {
             "WINEPREFIX": bottle.prefixPath,
             "WINEDEBUG": s.debugLogging ? Self.debugChannels : "-all",
         ]
+        let custom = customEnvironment()
         var overrides = [Self.menuBuilderOverride]
         if s.graphics == .dxvk, engine.supports(.dxvk) {
             overrides.append(Self.dxvkOverride)
+        }
+        // The user's overrides are appended (later entries win in Wine), not
+        // allowed to replace DXVK's and the menu-builder override.
+        if let user = custom["WINEDLLOVERRIDES"]?.trimmingCharacters(in: .whitespaces), !user.isEmpty {
+            overrides.append(user)
         }
         env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
 
@@ -277,7 +295,7 @@ struct LaunchPlanner {
         // Read by Rosetta (macOS 15+), so it applies to every x86_64 engine.
         if s.advertiseAVX { env["ROSETTA_ADVERTISE_AVX"] = "1" }
         if engine.supports(.d3dMetal), let dxr = rayTracingValue { env["D3DM_SUPPORT_DXR"] = dxr }
-        for (key, value) in customEnvironment() { env[key] = value }
+        for (key, value) in custom where key != "WINEDLLOVERRIDES" { env[key] = value }
         return env
     }
 
@@ -319,7 +337,7 @@ struct LaunchPlanner {
         let dlss = s.dlssMetalFX && engine.supports(.dlssMetalFX)
         let usesD3DMetal = s.graphics == .automatic || s.graphics == .d3dMetal
         let usesDXMT = s.graphics == .automatic || s.graphics == .dxmt
-        return [
+        var changes: [(key: String, value: String?)] = [
             ("CX_GRAPHICS_BACKEND", backend),
             ("WINEMSYNC", s.msync ? "1" : nil),
             ("D3DM_ENABLE_METALFX", dlss && usesD3DMetal ? "1" : nil),
@@ -329,6 +347,11 @@ struct LaunchPlanner {
             // Written both ways: reports disagree on the wrapper's own default.
             ("ROSETTA_ADVERTISE_AVX", s.advertiseAVX ? "1" : "0"),
         ]
+        // Only CrossOver 25 and earlier still have ESync; never touch the key on 26.
+        if engine.supports(.esync) {
+            changes.append(("WINEESYNC", s.esync && !s.msync ? "1" : nil))
+        }
+        return changes
     }
 
     /// An ASCII letter or underscore followed by letters, digits or underscores.

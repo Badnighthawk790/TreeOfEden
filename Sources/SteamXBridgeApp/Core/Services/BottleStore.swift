@@ -4,6 +4,7 @@ enum BottleStoreError: LocalizedError, Equatable {
     case invalidName
     case notAWinePrefix(String)
     case alreadyLinked(String)
+    case crossOverBottleNeedsCrossOver
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ enum BottleStoreError: LocalizedError, Equatable {
             return "\(path) does not look like a Wine prefix (no drive_c folder or system.reg)."
         case .alreadyLinked(let name):
             return "That prefix is already in SteamXBridge as \"\(name)\"."
+        case .crossOverBottleNeedsCrossOver:
+            return "CrossOver bottles are duplicated with CrossOver's own tool. Install CrossOver to duplicate this bottle."
         }
     }
 }
@@ -96,7 +99,12 @@ struct BottleStore {
         var bottle = Bottle(name: name, prefixPath: folder.path, origin: .owned)
         bottle.id = id
         configure(&bottle)
-        try save(bottle)
+        do {
+            try save(bottle)
+        } catch {
+            try? FileManager.default.removeItem(at: folder) // never leave an orphaned prefix
+            throw error
+        }
         return bottle
     }
 
@@ -106,11 +114,16 @@ struct BottleStore {
         let name = try Self.validatedName(rawName)
         guard Self.looksLikePrefix(prefix) else { throw BottleStoreError.notAWinePrefix(prefix.path) }
         let standardized = prefix.standardizedFileURL.path
-        if let twin = existing.first(where: { $0.prefixURL.standardizedFileURL.path == standardized }) {
+        let canonical = prefix.canonicalPath
+        if let twin = existing.first(where: { $0.prefixURL.canonicalPath == canonical }) {
             throw BottleStoreError.alreadyLinked(twin.name)
         }
         var bottle = Bottle(name: name, prefixPath: standardized, origin: .linked)
         bottle.linkedSource = source
+        // A CrossOver bottle already has settings; start from them, not defaults.
+        if let config = CrossOverBottleConfig(contentsOf: prefix.appendingPathComponent("cxbottle.conf")) {
+            bottle.settings = BottleSettings(crossOverConfig: config)
+        }
         try save(bottle)
         return bottle
     }
@@ -118,11 +131,14 @@ struct BottleStore {
     /// Copies a bottle's prefix into a new SteamXBridge-owned bottle. Prefixes
     /// with installed games can be many gigabytes; call this off the main thread.
     func duplicate(_ source: Bottle, named rawName: String) throws -> Bottle {
+        // A plain copy of a CrossOver bottle would sit outside CrossOver's bottle
+        // folder, where neither CrossOver nor another engine may run it; CrossOver
+        // bottles are duplicated with cxbottle instead (BottleOperations).
+        guard !source.isCrossOverBottle else { throw BottleStoreError.crossOverBottleNeedsCrossOver }
         let name = try Self.validatedName(rawName)
         let id = UUID()
         try FileManager.default.createDirectory(at: prefixesDirectory, withIntermediateDirectories: true)
         let folder = prefixesDirectory.appendingPathComponent(Self.folderName(for: name, id: id), isDirectory: true)
-        try FileManager.default.copyItem(at: source.prefixURL, to: folder)
         var copy = source
         copy.id = id
         copy.name = name
@@ -130,16 +146,38 @@ struct BottleStore {
         copy.origin = .owned
         copy.linkedSource = nil
         copy.createdAt = Date()
-        try save(copy)
+        copy.pinnedPrograms = Self.rebasedPins(source.pinnedPrograms, from: source.prefixURL, to: folder)
+        do {
+            try FileManager.default.copyItem(at: source.prefixURL, to: folder)
+            try save(copy)
+        } catch {
+            try? FileManager.default.removeItem(at: folder) // a partial copy is useless and large
+            throw error
+        }
         return copy
+    }
+
+    /// Pins pointing inside `oldPrefix` are moved to the same place in
+    /// `newPrefix`; pins elsewhere keep their path. Every pin gets a new ID.
+    static func rebasedPins(_ pins: [PinnedProgram], from oldPrefix: URL, to newPrefix: URL) -> [PinnedProgram] {
+        let old = oldPrefix.standardizedFileURL.path
+        let new = newPrefix.standardizedFileURL.path
+        return pins.map { pin in
+            var rebased = pin
+            rebased.id = UUID()
+            let path = URL(fileURLWithPath: pin.path).standardizedFileURL.path
+            if path.hasPrefix(old + "/") {
+                rebased.path = new + String(path.dropFirst(old.count))
+            }
+            return rebased
+        }
     }
 
     /// Removes a bottle from SteamXBridge. Owned prefixes go to the Trash (so a
     /// mistake is recoverable); linked prefixes are never touched.
     func remove(_ bottle: Bottle) throws {
         let fm = FileManager.default
-        if bottle.origin == .owned, fm.fileExists(atPath: bottle.prefixPath),
-           bottle.prefixURL.isContained(in: prefixesDirectory) {
+        if bottle.origin == .owned, fm.fileExists(atPath: bottle.prefixPath), isOwnedPrefixSafeToDelete(bottle.prefixURL) {
             #if os(macOS)
             if deletesToTrash {
                 try fm.trashItem(at: bottle.prefixURL, resultingItemURL: nil)
@@ -154,6 +192,19 @@ struct BottleStore {
         if fm.fileExists(atPath: metadata.path) {
             try fm.removeItem(at: metadata)
         }
+    }
+
+    /// Only a real (non-symlink) folder directly inside Prefixes, that still
+    /// resolves inside the real Prefixes folder, is ever deleted: never the
+    /// Prefixes folder itself, and never something a tampered path points at.
+    func isOwnedPrefixSafeToDelete(_ prefix: URL) -> Bool {
+        let fm = FileManager.default
+        let standardized = prefix.standardizedFileURL
+        let type = (try? fm.attributesOfItem(atPath: standardized.path))?[.type] as? FileAttributeType
+        guard type == .typeDirectory else { return false }
+        guard standardized.deletingLastPathComponent().path == prefixesDirectory.standardizedFileURL.path else { return false }
+        return URL(fileURLWithPath: standardized.canonicalPath).deletingLastPathComponent().path
+            == prefixesDirectory.canonicalPath
     }
 
     // MARK: Logs

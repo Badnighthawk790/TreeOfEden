@@ -125,21 +125,28 @@ struct ProcessRunner {
     /// (Wine helpers spawn children; on Linux, Foundation reports the exit only
     /// after every process holding the child's pipes has exited.)
     static func stop(_ process: Process, gracePeriod: TimeInterval = 3) {
-        signalGroup(of: process, SIGTERM)
-        DispatchQueue.global().asyncAfter(deadline: .now() + gracePeriod) {
-            if process.isRunning { signalGroup(of: process, SIGKILL) }
-        }
-    }
-
-    private static func signalGroup(of process: Process, _ signal: Int32) {
         let pid = process.processIdentifier
         guard pid > 0 else { return }
         // Foundation starts children as process-group leaders; only signal the
-        // group when that holds, so the app's own group is never hit.
-        if getpgid(pid) == pid, pid != getpgrp() {
-            kill(-pid, signal)
-        } else {
-            kill(pid, signal)
+        // group when that holds, so the app's own group is never hit. Decide
+        // once, up front: the leader may exit before its children do.
+        let isGroupLeader = getpgid(pid) == pid && pid != getpgrp()
+        kill(isGroupLeader ? -pid : pid, SIGTERM)
+        DispatchQueue.global().asyncAfter(deadline: .now() + gracePeriod) {
+            if isGroupLeader {
+                kill(-pid, SIGKILL) // ESRCH when the whole group is already gone
+            } else if process.isRunning {
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+
+    /// The app's environment minus variables that would redirect or alter the
+    /// engine: Wine's own (WINEPREFIX, WINESERVER, ...), CrossOver's (CX_*) and
+    /// the dynamic loader's (DYLD_*). Bottles set what they need explicitly.
+    static func inheritedEnvironment(_ environment: [String: String]) -> [String: String] {
+        environment.filter { key, _ in
+            !(key.hasPrefix("WINE") || key.hasPrefix("CX_") || key.hasPrefix("DYLD_"))
         }
     }
 
@@ -161,18 +168,21 @@ struct ProcessRunner {
         try preflight(invocation)
         let fm = FileManager.default
         try fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        // Owner-only from the moment it exists: logs include the environment.
-        guard fm.createFile(atPath: logURL.path, contents: Data(Self.header(for: invocation).utf8),
-                            attributes: [.posixPermissions: 0o600]) else {
+        // Owner-only from the moment it exists (logs include the environment),
+        // and append-only, so output from processes that outlive the one we
+        // started can never overwrite the exit footer.
+        let fd = open(logURL.path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
             throw ProcessRunnerError.launchFailed("could not create the log file at \(logURL.path)")
         }
-        let handle = try FileHandle(forWritingTo: logURL)
-        handle.seekToEndOfFile()
+        fchmod(fd, 0o600) // in case the file already existed with wider permissions
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        handle.write(Data(Self.header(for: invocation).utf8))
 
         let process = Process()
         process.executableURL = invocation.executable
         process.arguments = invocation.arguments
-        var environment = ProcessInfo.processInfo.environment
+        var environment = Self.inheritedEnvironment(ProcessInfo.processInfo.environment)
         environment.merge(invocation.environment) { _, new in new }
         process.environment = environment
         if let cwd = invocation.workingDirectory { process.currentDirectoryURL = cwd }
@@ -197,9 +207,10 @@ struct ProcessRunner {
     }
 
     private static func appendFooter(to url: URL, status: Int32) {
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? handle.close() }
-        handle.seekToEndOfFile()
         let line = "\n# exited with status \(status) at \(ISO8601DateFormatter().string(from: Date()))\n"
         handle.write(Data(line.utf8))
     }

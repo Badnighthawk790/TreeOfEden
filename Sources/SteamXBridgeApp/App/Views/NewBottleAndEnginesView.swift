@@ -13,6 +13,10 @@ struct NewBottleSheet: View {
     private var engines: [WineEngine] { AppModel.ordered(model.engines) }
     private var engine: WineEngine? { engines.first { $0.id == engineID } ?? engines.first }
     private var nameIsValid: Bool { (try? BottleStore.validatedName(name)) != nil }
+    /// Steam's client needs Windows 10 or later.
+    private var steamSupported: Bool { windowsVersion == .win10 || windowsVersion == .win11 }
+    /// CrossOver bottles are folders named after the bottle; a clash is caught here.
+    private var crossOverNameTaken: Bool { engine?.isCrossOver == true && model.crossOverBottleExists(named: name) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -30,6 +34,17 @@ struct NewBottleSheet: View {
                         ForEach(WindowsVersion.allCases) { Text($0.displayName).tag($0) }
                     }
                     Toggle("Install Steam for Windows after creating it", isOn: $installSteam)
+                        .disabled(!steamSupported)
+                    if !steamSupported {
+                        Text("Steam needs Windows 10 or later.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if crossOverNameTaken {
+                        Text("CrossOver already has a bottle named \"\(name)\". Choose another name, or add that bottle from the sidebar.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 .formStyle(.grouped)
 
@@ -38,6 +53,12 @@ struct NewBottleSheet: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !engine.isCrossOver, installSteam, steamSupported {
+                        Text("Steam's window may stay black on this engine (a known Wine problem with Steam's web view). CrossOver is the dependable engine for Steam.")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             HStack {
@@ -46,16 +67,23 @@ struct NewBottleSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Create") {
                     guard let engine else { return }
-                    model.createBottle(named: name, engine: engine, windowsVersion: windowsVersion, installSteam: installSteam)
+                    model.createBottle(named: name, engine: engine, windowsVersion: windowsVersion,
+                                       installSteam: installSteam && steamSupported)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(engine == nil || !nameIsValid)
+                .disabled(engine == nil || !nameIsValid || crossOverNameTaken)
             }
         }
         .padding(20)
         .frame(width: 520)
+        .onAppear {
+            // Suggest a name that does not clash with an existing CrossOver bottle.
+            if model.crossOverBottleExists(named: name) {
+                name = (2...99).map { "Steam \($0)" }.first { !model.crossOverBottleExists(named: $0) } ?? name
+            }
+        }
     }
 
     private func explanation(for engine: WineEngine) -> String {
@@ -72,6 +100,7 @@ struct NewBottleSheet: View {
 struct EnginesSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var choosingEngine = false
+    @State private var engineError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -122,8 +151,14 @@ struct EnginesSettingsView: View {
             }
         }
         .padding(20)
-        .fileImporter(isPresented: $choosingEngine, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result { model.addCustomEngine(at: url) }
+        // .application lets an engine app (CrossOver.app, Wine Stable.app) be picked whole.
+        .fileImporter(isPresented: $choosingEngine, allowedContentTypes: [.application, .item]) { result in
+            if case .success(let url) = result { engineError = model.addCustomEngine(at: url) }
+        }
+        .alert("Could not add that engine", isPresented: Binding(get: { engineError != nil }, set: { if !$0 { engineError = nil } })) {
+            Button("OK", role: .cancel) { engineError = nil }
+        } message: {
+            Text(engineError ?? "")
         }
     }
 

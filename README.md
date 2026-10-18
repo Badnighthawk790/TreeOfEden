@@ -7,13 +7,14 @@ SteamXBridge is a CrossOver-style bottle manager for Apple Silicon Macs. It runs
 - **Bottles.** Create, add, duplicate and remove bottles. New bottles are created with the engine of your choice. With CrossOver, they are made by CrossOver's own `cxbottle` tool, so CrossOver can open them too.
 - **Bring what you already have.** Existing CrossOver bottles, Whisky bottles (original and community fork), Sikarugir wrappers and plain Wine/GPTK prefixes are found automatically. Adding one never moves or changes its files.
 - **Steam in a bottle.** One click downloads the official Windows Steam installer and installs it into the bottle. Installed games are read from every Steam library, including libraries on other drives (`D:\SteamLibrary` is mapped through the bottle's drive letters). They launch through the Windows Steam client (`steam.exe -applaunch`), so Steam DRM and Steamworks work.
-- **Programs.** Start Menu shortcuts are listed the way CrossOver lists launchers. You can also pin any `.exe`, or run any `.exe`, `.msi`, `.bat` or `.lnk` with **Run Command**.
+- **Programs.** Start Menu shortcuts are listed the way CrossOver lists launchers. **Pin Program…** adds any `.exe` to the list, and **Run Command** runs any `.exe`, `.msi`, `.bat` or `.lnk`.
 - **Bottle settings**, matching CrossOver 26's Advanced Settings:
   - **Graphics renderer:** Automatic, D3DMetal, DXMT, DXVK or WineD3D. The choices depend on what the engine supports.
   - **Graphics options:** DLSS powered by MetalFX, DirectX ray tracing (only on chips with hardware ray tracing, M3 and newer), Metal Performance HUD, and High Resolution Mode.
   - **Performance:** MSync/ESync, and advertising AVX to programs.
   - **Other:** Windows version, custom environment variables, and detailed Wine logging.
-  - CrossOver bottles store these settings in `cxbottle.conf`, as CrossOver itself does. Other engines receive them as launch-time variables.
+  - In CrossOver bottles, the graphics, sync, HUD, ray-tracing, DLSS and AVX settings live in `cxbottle.conf`, as CrossOver itself does. When you add an existing CrossOver bottle, they are read from there, and later edits change only the keys you touch. The Windows version and High Resolution Mode are stored in the bottle's registry. Custom variables and logging are applied at launch, and a `cxbottle.conf` value overrides a custom variable of the same name.
+  - Other engines receive all settings as launch-time variables.
 - **Tools.** Wine Configuration, Control Panel, Game Controllers, Internet Settings, Task Manager, Registry Editor, Command Prompt and File Explorer, plus Open C: Drive, Simulate Reboot and Force Quit.
 - **Logs.** Every run is logged with its command, environment and exit status, so a game that "does nothing" leaves a trace.
 - **Compatibility notes.** Known titles carry a verdict and one-click recommended settings, for example HELLDIVERS 2 (below). A known App ID is authoritative, so similarly named games never inherit another game's verdict.

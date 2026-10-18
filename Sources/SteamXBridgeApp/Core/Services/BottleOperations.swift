@@ -49,6 +49,8 @@ struct BottleOperations {
     let gpu: GPUStack
     let crossOverBottleDirectory: URL
     var runner = ProcessRunner()
+    /// How long to wait for steam.exe to appear after the installer exits.
+    var steamPollTimeout: TimeInterval = 30
     /// Fetches a URL to a local file. Injectable for tests.
     var download: (URL, URL) async throws -> Void = BottleOperations.urlSessionDownload
 
@@ -97,31 +99,33 @@ struct BottleOperations {
     func createCrossOverBottle(named rawName: String, engine: WineEngine, windowsVersion: WindowsVersion,
                                settings: BottleSettings, existing: [Bottle]) async throws -> Bottle {
         let name = try Self.crossOverBottleName(rawName)
-        let cxbottle = engine.loaderURL.deletingLastPathComponent().appendingPathComponent("cxbottle")
-        guard FileManager.default.isExecutableFile(atPath: cxbottle.path) else {
-            throw BottleOperationError.crossOverToolMissing(cxbottle.path)
-        }
+        let cxbottle = try crossOverTool(engine)
         let folder = crossOverBottleDirectory.appendingPathComponent(name, isDirectory: true)
         guard !FileManager.default.fileExists(atPath: folder.path) else {
             throw BottleOperationError.crossOverBottleExists(name)
         }
-        let result = try await runner.run(WineInvocation(
-            executable: cxbottle,
-            arguments: ["--bottle", name, "--create", "--template", Self.crossOverTemplate(for: windowsVersion)],
-            environment: [:],
-            workingDirectory: nil,
-            displayName: "Create CrossOver bottle"
-        ), logURL: store.logsDirectory.appendingPathComponent("crossover-create-\(BottleStore.slug(name)).log"), timeout: 600)
-        guard result.succeeded, FileManager.default.fileExists(atPath: folder.path) else {
-            throw BottleOperationError.commandFailed("cxbottle", status: result.exitCode, log: result.logURL?.path)
+        // Use the template CrossOver actually ships (enumerated at runtime), and
+        // record the Windows version that template really produces.
+        let template = Self.availableTemplate(for: windowsVersion, cxRoot: cxbottle.deletingLastPathComponent().deletingLastPathComponent())
+        return try await withCrossOverCleanup(folder: folder, name: name, cxbottle: cxbottle) { link in
+            let result = try await runner.run(WineInvocation(
+                executable: cxbottle,
+                arguments: ["--bottle", name, "--create", "--template", template.name],
+                environment: [:],
+                workingDirectory: nil,
+                displayName: "Create CrossOver bottle"
+            ), logURL: store.logsDirectory.appendingPathComponent("crossover-create-\(BottleStore.slug(name)).log"), timeout: 600)
+            guard result.succeeded, FileManager.default.fileExists(atPath: folder.path) else {
+                throw BottleOperationError.commandFailed("cxbottle", status: result.exitCode, log: result.logURL?.path)
+            }
+            var bottle = try link(store.linkBottle(prefix: folder, named: name, source: ExternalBottleFinder.crossOverSource, existing: existing))
+            bottle.engineID = engine.id
+            bottle.windowsVersion = template.version
+            bottle.settings = settings
+            try store.save(bottle)
+            try await applySettings(from: nil, to: bottle, engine: engine)
+            return bottle
         }
-        var bottle = try store.linkBottle(prefix: folder, named: name, source: ExternalBottleFinder.crossOverSource, existing: existing)
-        bottle.engineID = engine.id
-        bottle.windowsVersion = windowsVersion
-        bottle.settings = settings
-        try store.save(bottle)
-        try await applySettings(from: nil, to: bottle, engine: engine)
-        return bottle
     }
 
     /// Duplicates a CrossOver bottle with `cxbottle --copy`, so the copy lives
@@ -130,31 +134,83 @@ struct BottleOperations {
     func duplicateCrossOverBottle(_ source: Bottle, named rawName: String, engine: WineEngine,
                                   existing: [Bottle]) async throws -> Bottle {
         let name = try Self.crossOverBottleName(rawName)
-        let cxbottle = engine.loaderURL.deletingLastPathComponent().appendingPathComponent("cxbottle")
-        guard FileManager.default.isExecutableFile(atPath: cxbottle.path) else {
-            throw BottleOperationError.crossOverToolMissing(cxbottle.path)
-        }
+        let cxbottle = try crossOverTool(engine)
         let folder = crossOverBottleDirectory.appendingPathComponent(name, isDirectory: true)
         guard !FileManager.default.fileExists(atPath: folder.path) else {
             throw BottleOperationError.crossOverBottleExists(name)
         }
-        let result = try await runner.run(WineInvocation(
-            executable: cxbottle,
-            arguments: ["--bottle", name, "--copy", source.prefixURL.lastPathComponent],
-            environment: [:],
-            workingDirectory: nil,
-            displayName: "Duplicate CrossOver bottle"
-        ), logURL: store.logsDirectory.appendingPathComponent("crossover-copy-\(BottleStore.slug(name)).log"), timeout: 3600)
-        guard result.succeeded, FileManager.default.fileExists(atPath: folder.path) else {
-            throw BottleOperationError.commandFailed("cxbottle --copy", status: result.exitCode, log: result.logURL?.path)
+        return try await withCrossOverCleanup(folder: folder, name: name, cxbottle: cxbottle) { link in
+            let result = try await runner.run(WineInvocation(
+                executable: cxbottle,
+                arguments: ["--bottle", name, "--copy", source.prefixURL.lastPathComponent],
+                environment: [:],
+                workingDirectory: nil,
+                displayName: "Duplicate CrossOver bottle"
+            ), logURL: store.logsDirectory.appendingPathComponent("crossover-copy-\(BottleStore.slug(name)).log"), timeout: 3600)
+            guard result.succeeded, FileManager.default.fileExists(atPath: folder.path) else {
+                throw BottleOperationError.commandFailed("cxbottle --copy", status: result.exitCode, log: result.logURL?.path)
+            }
+            var copy = try link(store.linkBottle(prefix: folder, named: name, source: ExternalBottleFinder.crossOverSource, existing: existing))
+            copy.engineID = engine.id
+            copy.windowsVersion = source.windowsVersion
+            copy.settings = source.settings
+            copy.pinnedPrograms = BottleStore.rebasedPins(source.pinnedPrograms, from: source.prefixURL, to: folder)
+            try store.save(copy)
+            return copy
         }
-        var copy = try store.linkBottle(prefix: folder, named: name, source: ExternalBottleFinder.crossOverSource, existing: existing)
-        copy.engineID = engine.id
-        copy.windowsVersion = source.windowsVersion
-        copy.settings = source.settings
-        copy.pinnedPrograms = source.pinnedPrograms
-        try store.save(copy)
-        return copy
+    }
+
+    private func crossOverTool(_ engine: WineEngine) throws -> URL {
+        let cxbottle = engine.loaderURL.deletingLastPathComponent().appendingPathComponent("cxbottle")
+        guard FileManager.default.isExecutableFile(atPath: cxbottle.path) else {
+            throw BottleOperationError.crossOverToolMissing(cxbottle.path)
+        }
+        return cxbottle
+    }
+
+    /// Runs a cxbottle create/copy and, if anything fails, undoes what this call
+    /// made: the SteamXBridge record and the half-made bottle in CrossOver's
+    /// folder (so a retry under the same name works). The folder did not exist
+    /// before the call, so nothing of the user's is touched.
+    private func withCrossOverCleanup(folder: URL, name: String, cxbottle: URL,
+                                      _ work: (_ link: (Bottle) -> Bottle) async throws -> Bottle) async throws -> Bottle {
+        var linked: Bottle?
+        do {
+            return try await work { bottle in
+                linked = bottle
+                return bottle
+            }
+        } catch {
+            if let linked { try? store.remove(linked) } // linked: metadata only
+            if FileManager.default.fileExists(atPath: folder.path) {
+                _ = try? await runner.run(WineInvocation(
+                    executable: cxbottle, arguments: ["--bottle", name, "--delete", "--force"],
+                    environment: [:], workingDirectory: nil, displayName: "Remove failed CrossOver bottle"
+                ), timeout: 120)
+                if FileManager.default.fileExists(atPath: folder.path) {
+                    #if os(macOS)
+                    try? FileManager.default.trashItem(at: folder, resultingItemURL: nil)
+                    #else
+                    try? FileManager.default.removeItem(at: folder)
+                    #endif
+                }
+            }
+            throw error
+        }
+    }
+
+    /// The template to create a bottle from: the 64-bit template for the
+    /// requested Windows version when CrossOver ships it, else Windows 10.
+    static func availableTemplate(for version: WindowsVersion, cxRoot: URL) -> (name: String, version: WindowsVersion) {
+        let templates = cxRoot.appendingPathComponent("share/crossover/bottle_templates", isDirectory: true)
+        let wanted = crossOverTemplate(for: version)
+        let wantedVersion: WindowsVersion = version == .win81 ? .win10 : version
+        // When the template folder cannot be listed, trust the conventional names.
+        guard FileManager.default.fileExists(atPath: templates.path) else { return (wanted, wantedVersion) }
+        if FileManager.default.fileExists(atPath: templates.appendingPathComponent(wanted).path) {
+            return (wanted, wantedVersion)
+        }
+        return ("win10_64", .win10)
     }
 
     /// CrossOver bottle names are folder names: no slashes, no leading dot.
@@ -183,7 +239,7 @@ struct BottleOperations {
     /// cxbottle.conf, the Windows version, High Resolution Mode, and DXVK files.
     func applySettings(from old: Bottle?, to bottle: Bottle, engine: WineEngine) async throws {
         if bottle.isCrossOverBottle {
-            try writeCrossOverConfig(for: bottle, engine: engine)
+            try writeCrossOverConfig(for: bottle, previous: old, engine: engine)
         }
         if let old, old.windowsVersion != bottle.windowsVersion {
             try await runChecked(try planner(for: bottle, engine: engine).setWindowsVersion(bottle.windowsVersion),
@@ -196,13 +252,27 @@ struct BottleOperations {
         try installDXVKIfNeeded(bottle: bottle, engine: engine)
     }
 
-    /// Rewrites only SteamXBridge's keys in cxbottle.conf, atomically.
-    func writeCrossOverConfig(for bottle: Bottle, engine: WineEngine) throws {
+    /// Writes SteamXBridge's keys to cxbottle.conf, atomically. With `previous`,
+    /// only keys whose value changed between the two bottles are touched, so a
+    /// rename or an unrelated edit never resets choices made in CrossOver.
+    /// Without it (a bottle SteamXBridge just created), every key is written.
+    func writeCrossOverConfig(for bottle: Bottle, previous: Bottle?, engine: WineEngine) throws {
         let url = bottle.prefixURL.appendingPathComponent("cxbottle.conf")
         var config = CrossOverBottleConfig(contentsOf: url) ?? CrossOverBottleConfig(text: "")
-        for change in planner(for: bottle, engine: engine).crossOverConfigChanges() {
-            config.setValue(change.value, section: "EnvironmentVariables", key: change.key)
+        let changes = planner(for: bottle, engine: engine).crossOverConfigChanges()
+        var before: [String: String?] = [:]
+        if let previous {
+            for change in planner(for: previous, engine: engine).crossOverConfigChanges() where before[change.key] == nil {
+                before[change.key] = .some(change.value)
+            }
         }
+        var touched = false
+        for change in changes {
+            if previous != nil, let old = before[change.key], old == change.value { continue }
+            config.setValue(change.value, section: "EnvironmentVariables", key: change.key)
+            touched = true
+        }
+        guard touched else { return }
         try Data(config.text.utf8).write(to: url, options: .atomic)
     }
 
@@ -224,7 +294,10 @@ struct BottleOperations {
     // MARK: Running
 
     /// Starts a program and returns immediately; `onExit` fires when it ends.
+    /// `waitForChildren` is for installers: on CrossOver the run (and its log)
+    /// then lasts until every process the installer started has exited.
     func launch(_ target: LaunchTarget, in bottle: Bottle, engine: WineEngine, runID: UUID = UUID(),
+                waitForChildren: Bool = false,
                 onExit: @escaping @Sendable (Int32) -> Void) throws -> RunningProgram {
         try installDXVKIfNeeded(bottle: bottle, engine: engine)
         let name = target.displayName
@@ -232,7 +305,8 @@ struct BottleOperations {
         let wineLog = engine.isCrossOver
             ? log.deletingPathExtension().appendingPathExtension("wine.log")
             : nil
-        let invocation = try planner(for: bottle, engine: engine).invocation(for: target, wineLogURL: wineLog)
+        let invocation = try planner(for: bottle, engine: engine)
+            .invocation(for: target, wineLogURL: wineLog, waitForChildren: waitForChildren)
         let process = try runner.start(invocation, logURL: log, onExit: onExit)
         return RunningProgram(id: runID, bottleID: bottle.id, name: name, startedAt: Date(), logURL: log, wineLogURL: wineLog, process: process)
     }
@@ -258,14 +332,20 @@ struct BottleOperations {
         let log = store.logURL(for: bottle, program: "install-steam")
         let invocation = try planner(for: bottle, engine: engine)
             .invocation(for: .program(setup, arguments: Self.steamSilentInstallArguments, workingDirectory: nil),
-                        wineLogURL: engine.isCrossOver ? log.deletingPathExtension().appendingPathExtension("wine.log") : nil)
+                        wineLogURL: engine.isCrossOver ? log.deletingPathExtension().appendingPathExtension("wine.log") : nil,
+                        waitForChildren: true)
         let result = try await runner.run(invocation, logURL: log, timeout: 900)
-        guard let steam = SteamInstallation.locate(inPrefix: bottle.prefixURL) else {
-            throw result.succeeded
-                ? BottleOperationError.steamInstallFailed(log: log.path)
-                : BottleOperationError.commandFailed("The Steam installer", status: result.exitCode, log: log.path)
+        // The installer may hand off to a child that finishes writing steam.exe
+        // a moment after the wrapper exits, so poll briefly before giving up.
+        let deadline = Date().addingTimeInterval(steamPollTimeout)
+        while true {
+            if let steam = SteamInstallation.locate(inPrefix: bottle.prefixURL) { return steam }
+            if Date() >= deadline { break }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        return steam
+        throw result.succeeded
+            ? BottleOperationError.steamInstallFailed(log: log.path)
+            : BottleOperationError.commandFailed("The Steam installer", status: result.exitCode, log: log.path)
     }
 
     func steamInstaller() async throws -> URL {

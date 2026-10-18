@@ -86,6 +86,29 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 10, "the timeout must stop the helper's children too")
     }
 
+    func testInheritedEnvironmentDropsWineCrossOverAndLoaderVariables() {
+        let filtered = ProcessRunner.inheritedEnvironment([
+            "WINEPREFIX": "/elsewhere", "WINESERVER": "/x", "CX_BOTTLE": "Other", "DYLD_INSERT_LIBRARIES": "/evil.dylib",
+            "PATH": "/usr/bin", "HOME": "/Users/me", "LANG": "en_US.UTF-8",
+        ])
+        XCTAssertEqual(filtered, ["PATH": "/usr/bin", "HOME": "/Users/me", "LANG": "en_US.UTF-8"])
+    }
+
+    func testLateOutputFromChildrenIsAppendedAfterTheFooter() throws {
+        let tmp = try TemporaryDirectory()
+        let loader = try tmp.file("engine/bin/wine", contents: "#!/bin/sh\n(sleep 1; echo LATE-OUTPUT) &\necho EARLY\nexit 0\n", executable: true)
+        let log = tmp.url.appendingPathComponent("late.log")
+        let exited = expectation(description: "exit")
+        try ProcessRunner().start(WineInvocation(executable: loader, arguments: [], environment: [:],
+                                                 workingDirectory: nil, displayName: "late"), logURL: log) { _ in exited.fulfill() }
+        wait(for: [exited], timeout: 10)
+        Thread.sleep(forTimeInterval: 1.5) // let the background child write
+        let text = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(text.contains("EARLY"))
+        XCTAssertTrue(text.contains("LATE-OUTPUT"))
+        XCTAssertTrue(text.contains("# exited with status 0"), "the footer is never overwritten")
+    }
+
     func testPreflightRejectsMissingAndNonExecutableFiles() throws {
         let tmp = try TemporaryDirectory()
         let runner = ProcessRunner()

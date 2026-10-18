@@ -39,6 +39,7 @@ struct ToolsView: View {
                                     systemImage: "plus.square.on.square") {
                             model.duplicate(bottle)
                         }
+                        .disabled(model.isBusy(bottle))
                         ProgramTile(title: "Show in Finder", subtitle: bottle.prefixURL.lastPathComponent, systemImage: "folder") {
                             model.reveal(bottle.prefixURL)
                         }
@@ -53,6 +54,12 @@ struct ToolsView: View {
                         .foregroundStyle(.secondary)
                     Button(bottle.origin == .owned ? "Move Bottle to Trash…" : "Remove from SteamXBridge…", role: .destructive) {
                         model.bottlePendingRemoval = bottle
+                    }
+                    .disabled(model.isBusy(bottle))
+                    if model.isBusy(bottle) {
+                        Text("Quit the bottle's programs (Force Quit) and wait for running operations first.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -75,9 +82,10 @@ struct LogsView: View {
                     Text(BottleStore.logTitle(for: url))
                         .lineLimit(1)
                     if let run = model.runs.first(where: { $0.logURL == url || $0.wineLogURL == url }) {
-                        Text(run.isRunning ? "Running" : "Exited with status \(run.exitStatus ?? 0)")
+                        Text(run.statusText)
                             .font(.caption)
-                            .foregroundStyle(run.isRunning ? Color.green : (run.exitStatus == 0 ? Color.secondary : Color.orange))
+                            .foregroundStyle(run.isRunning ? Color.green
+                                             : (run.exitStatus == 0 || run.stopRequested ? Color.secondary : Color.orange))
                     } else {
                         Text(url.lastPathComponent)
                             .font(.caption)

@@ -42,6 +42,15 @@ struct RootView: View {
         } message: { request in
             Text(request.message)
         }
+        .alert("Quit programs to apply these settings?", isPresented: Binding(
+            get: { model.pendingApply != nil },
+            set: { if !$0 { model.pendingApply = nil } }
+        ), presenting: model.pendingApply) { _ in
+            Button("Quit Programs and Apply") { model.confirmPendingApply(quitFirst: true) }
+            Button("Not Now", role: .cancel) { model.pendingApply = nil }
+        } message: { pending in
+            Text("Programs are running in \(pending.updated.name), including Steam if it is open. These settings only take effect when every program in the bottle has quit. Your changes stay in the Settings tab until you apply them.")
+        }
         .confirmationDialog(
             removalTitle,
             isPresented: Binding(get: { model.bottlePendingRemoval != nil }, set: { if !$0 { model.bottlePendingRemoval = nil } }),
@@ -99,10 +108,12 @@ struct SidebarView: View {
                             Button("Open C: Drive") { model.openInFinder(bottle.driveC) }
                             Button("Show in Finder") { model.reveal(bottle.prefixURL) }
                             Button("Duplicate") { model.duplicate(bottle) }
+                                .disabled(model.isBusy(bottle))
                             Divider()
                             Button(bottle.origin == .owned ? "Move to Trash…" : "Remove from SteamXBridge…", role: .destructive) {
                                 model.bottlePendingRemoval = bottle
                             }
+                            .disabled(model.isBusy(bottle))
                         }
                 }
             }

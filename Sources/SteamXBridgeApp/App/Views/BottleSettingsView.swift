@@ -6,38 +6,48 @@ import SwiftUI
 struct BottleSettingsView: View {
     @EnvironmentObject private var model: AppModel
     let bottle: Bottle
-    @State private var draft: Bottle
 
-    init(bottle: Bottle) {
-        self.bottle = bottle
-        _draft = State(initialValue: bottle)
+    /// The edited copy lives in the model, so edits survive switching tabs or bottles.
+    private var draft: Bottle { model.settingsDrafts[bottle.id] ?? bottle }
+    private var draftBinding: Binding<Bottle> {
+        Binding(
+            get: { model.settingsDrafts[bottle.id] ?? bottle },
+            set: { edited in updateDraft { $0 = edited } }
+        )
+    }
+
+    /// Edits the draft; a draft equal to the saved bottle is dropped.
+    private func updateDraft(_ change: (inout Bottle) -> Void) {
+        var edited = draft
+        change(&edited)
+        model.settingsDrafts[bottle.id] = AppModel.sameSettings(edited, bottle) ? nil : edited
     }
 
     private var engines: [WineEngine] { model.compatibleEngines(for: bottle) }
     private var engine: WineEngine? {
         engines.first { $0.id == draft.engineID } ?? engines.first
     }
-    private var hasChanges: Bool { draft != bottle }
+    private var hasChanges: Bool { !AppModel.sameSettings(draft, bottle) }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section("Bottle") {
-                    TextField("Name", text: $draft.name)
+                    TextField("Name", text: draftBinding.name)
                     if engines.isEmpty {
                         Text(bottle.isCrossOverBottle ? "Install CrossOver to run this CrossOver bottle." : "No compatible engine is installed.")
                             .foregroundStyle(.orange)
                     } else {
                         Picker("Engine", selection: Binding(
                             get: { engine?.id ?? "" },
-                            set: { draft.engineID = $0 }
+                            set: { id in updateDraft { $0.engineID = id } }
                         )) {
                             ForEach(engines) { engine in
                                 Text(engine.name).tag(engine.id)
                             }
                         }
                     }
-                    Picker("Windows version", selection: $draft.windowsVersion) {
+                    Picker("Windows version", selection: draftBinding.windowsVersion) {
                         ForEach(WindowsVersion.allCases) { Text($0.displayName).tag($0) }
                     }
                     LabeledContent("Location") {
@@ -72,7 +82,7 @@ struct BottleSettingsView: View {
                                     .help("SteamXBridge sets this itself; it will be ignored.")
                             }
                             Button(role: .destructive) {
-                                draft.settings.environment.removeAll { $0.id == item.id }
+                                updateDraft { $0.settings.environment.removeAll { $0.id == item.id } }
                             } label: {
                                 Image(systemName: "minus.circle")
                             }
@@ -80,7 +90,7 @@ struct BottleSettingsView: View {
                         }
                     }
                     Button("Add Variable") {
-                        draft.settings.environment.append(EnvironmentVariable(name: "", value: ""))
+                        updateDraft { $0.settings.environment.append(EnvironmentVariable(name: "", value: "")) }
                     }
                 } header: {
                     Text("Environment Variables")
@@ -89,7 +99,7 @@ struct BottleSettingsView: View {
                 }
 
                 Section("Troubleshooting") {
-                    Toggle("Detailed Wine logging", isOn: $draft.settings.debugLogging)
+                    Toggle("Detailed Wine logging", isOn: draftBinding.settings.debugLogging)
                     Text("Writes Wine's debug channels to each run's log (Logs tab). Slower; turn it off when you are done.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -126,11 +136,20 @@ struct BottleSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Revert") { draft = bottle }
+                Button("Revert") { model.settingsDrafts[bottle.id] = nil }
                     .disabled(!hasChanges)
                 Button("Apply") {
-                    var updated = draft
-                    updated.name = (try? BottleStore.validatedName(updated.name)) ?? bottle.name
+                    // Normalize the name in the draft too, so once saved the draft
+                    // matches and Apply/Revert turn off.
+                    let name = (try? BottleStore.validatedName(draft.name)) ?? bottle.name
+                    updateDraft { $0.name = name }
+                    // Copy only the editable fields onto the current bottle, so
+                    // pins added meanwhile are kept.
+                    var updated = bottle
+                    updated.name = name
+                    updated.engineID = draft.engineID
+                    updated.windowsVersion = draft.windowsVersion
+                    updated.settings = draft.settings
                     model.save(updated)
                 }
                 .buttonStyle(.borderedProminent)
@@ -138,9 +157,6 @@ struct BottleSettingsView: View {
                 .keyboardShortcut(.defaultAction)
             }
             .padding(12)
-        }
-        .onChange(of: bottle) { _, newValue in
-            if !hasChanges { draft = newValue }
         }
     }
 
@@ -150,8 +166,10 @@ struct BottleSettingsView: View {
         Binding(
             get: { draft.settings.environment.first { $0.id == id } ?? EnvironmentVariable(id: id, name: "", value: "") },
             set: { updated in
-                if let index = draft.settings.environment.firstIndex(where: { $0.id == id }) {
-                    draft.settings.environment[index] = updated
+                updateDraft { bottle in
+                    if let index = bottle.settings.environment.firstIndex(where: { $0.id == id }) {
+                        bottle.settings.environment[index] = updated
+                    }
                 }
             }
         )
@@ -159,7 +177,7 @@ struct BottleSettingsView: View {
 
     private func graphicsSection(_ engine: WineEngine) -> some View {
         Section("Graphics") {
-            Picker("Renderer", selection: $draft.settings.graphics) {
+            Picker("Renderer", selection: draftBinding.settings.graphics) {
                 ForEach(engine.graphicsBackends) { backend in
                     Text(backend == .automatic ? "Automatic (\(engine.automaticGraphicsDescription))" : backend.displayName)
                         .tag(backend)
@@ -175,14 +193,14 @@ struct BottleSettingsView: View {
             }
 
             if engine.supports(.dlssMetalFX) {
-                Toggle("DLSS powered by MetalFX", isOn: $draft.settings.dlssMetalFX)
+                Toggle("DLSS powered by MetalFX", isOn: draftBinding.settings.dlssMetalFX)
                 Text("Turn on DLSS in the game; it is upscaled with MetalFX (D3DMetal or DXMT, macOS 26).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             if engine.supports(.d3dMetal) {
-                Picker("DirectX ray tracing", selection: $draft.settings.rayTracing) {
+                Picker("DirectX ray tracing", selection: draftBinding.settings.rayTracing) {
                     ForEach(RayTracingMode.allCases) { Text($0.displayName).tag($0) }
                 }
                 .disabled(!model.gpu.hasHardwareRayTracing)
@@ -193,8 +211,8 @@ struct BottleSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Toggle("Metal Performance HUD", isOn: $draft.settings.metalHUD)
-            Toggle("High Resolution Mode", isOn: $draft.settings.highResolutionMode)
+            Toggle("Metal Performance HUD", isOn: draftBinding.settings.metalHUD)
+            Toggle("High Resolution Mode", isOn: draftBinding.settings.highResolutionMode)
             Text("Renders at full Retina resolution (192 DPI). Sharper, but much heavier on the GPU; keep it off on a MacBook Air.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -204,18 +222,18 @@ struct BottleSettingsView: View {
     private func performanceSection(_ engine: WineEngine) -> some View {
         Section("Performance") {
             if engine.supports(.msync) {
-                Toggle("MSync", isOn: $draft.settings.msync)
+                Toggle("MSync", isOn: draftBinding.settings.msync)
             }
             if engine.supports(.esync), !(engine.supports(.msync) && draft.settings.msync) {
-                Toggle("ESync", isOn: $draft.settings.esync)
+                Toggle("ESync", isOn: draftBinding.settings.esync)
             }
             if !engine.isCrossOver {
-                Toggle("Steam compatibility switches", isOn: $draft.settings.steamCompatibilityFlags)
+                Toggle("Steam compatibility switches", isOn: draftBinding.settings.steamCompatibilityFlags)
                 Text("Starts Steam with -noverifyfiles -no-cef-sandbox -cef-single-process. Can help Steam's window on WineHQ builds, where it may still appear black (an open Wine bug); CrossOver handles Steam itself.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Toggle("Advertise AVX to programs", isOn: $draft.settings.advertiseAVX)
+            Toggle("Advertise AVX to programs", isOn: draftBinding.settings.advertiseAVX)
             Text("Lets Rosetta report AVX/AVX2 (macOS 15 or later). Some games, such as HELLDIVERS 2, refuse to start without it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

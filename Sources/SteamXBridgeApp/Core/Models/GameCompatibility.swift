@@ -42,8 +42,10 @@ enum GameCompatibility {
         let title: String
         let rating: Rating
         let antiCheat: String?
-        /// Lowest CrossOver major version that runs it; nil when any engine may work.
-        let minimumCrossOverMajor: Int?
+        /// Lowest CrossOver version that runs it at all; nil when any engine may work.
+        let minimumCrossOverVersion: String?
+        /// The CrossOver version with the latest fix for it, when newer than the minimum.
+        let recommendedCrossOverVersion: String?
         let recommendation: Recommendation?
         let note: String
         /// When the entry was last checked against public reports (YYYY-MM).
@@ -58,9 +60,10 @@ enum GameCompatibility {
             title: "HELLDIVERS 2",
             rating: .runsWell,
             antiCheat: "nProtect GameGuard",
-            minimumCrossOverMajor: 26,
+            minimumCrossOverVersion: "26.0",
+            recommendedCrossOverVersion: "26.2",
             recommendation: Recommendation(graphics: .d3dMetal, msync: false, advertiseAVX: true, highResolutionMode: false),
-            note: "Runs in CrossOver 26 or later, including online play. GameGuard works there because of CodeWeavers' own patches; it does not get past GameGuard in Whisky, the Game Porting Toolkit or plain Wine. The game is DirectX 12 only, so it needs D3DMetal, and AVX must be advertised or it stops with \"Incompatible CPU detected\". Players report the smoothest results with MSync off. Game patches have broken it before (CrossOver 26.2 shipped a fix), so it can break again. On a base M1/M2 expect roughly 20-35 fps at low settings around 720p-1080p (base M3/M4 MacBook Airs report 30-40 fps); 16 GB of memory is recommended.",
+            note: "Runs in CrossOver 26 or later; CodeWeavers rates it Runs Well on 26.3. Online play has worked there because its anti-cheat (GameGuard) happens to work with CodeWeavers' patches, which CodeWeavers does not guarantee, so a game patch can break it again (26.2 shipped a fix for one). It does not get past GameGuard in Whisky, the Game Porting Toolkit or plain Wine. The game is DirectX 12 only, so it needs D3DMetal, and AVX must be advertised or it stops with \"Incompatible CPU detected\". Players report the smoothest results with MSync off. On a base M1/M2 expect roughly 20-35 fps at low settings around 720p-1080p (base M3/M4 MacBook Airs report 30-40 fps); 16 GB of memory is recommended.",
             asOf: "2026-10"
         ),
         Entry(
@@ -68,7 +71,8 @@ enum GameCompatibility {
             title: "Destiny 2",
             rating: .blocked,
             antiCheat: "BattlEye",
-            minimumCrossOverMajor: nil,
+            minimumCrossOverVersion: nil,
+            recommendedCrossOverVersion: nil,
             recommendation: nil,
             note: "Bungie blocks Wine and Proton. Launching it under translation fails and risks account action.",
             asOf: "2026-10"
@@ -78,7 +82,8 @@ enum GameCompatibility {
             title: "Apex Legends",
             rating: .blocked,
             antiCheat: "Easy Anti-Cheat",
-            minimumCrossOverMajor: nil,
+            minimumCrossOverVersion: nil,
+            recommendedCrossOverVersion: nil,
             recommendation: nil,
             note: "EA turned off Wine/Proton support for its anti-cheat in 2024, so matchmaking is blocked.",
             asOf: "2026-10"
@@ -88,7 +93,8 @@ enum GameCompatibility {
             title: "Cyberpunk 2077",
             rating: .native,
             antiCheat: nil,
-            minimumCrossOverMajor: nil,
+            minimumCrossOverVersion: nil,
+            recommendedCrossOverVersion: nil,
             recommendation: nil,
             note: "A native Apple Silicon version shipped in 2025. Install it with the macOS Steam client for much better performance than translation.",
             asOf: "2026-10"
@@ -98,7 +104,8 @@ enum GameCompatibility {
             title: "Baldur's Gate 3",
             rating: .native,
             antiCheat: nil,
-            minimumCrossOverMajor: nil,
+            minimumCrossOverVersion: nil,
+            recommendedCrossOverVersion: nil,
             recommendation: nil,
             note: "Has a native macOS version. Install it with the macOS Steam client instead.",
             asOf: "2026-10"
@@ -119,17 +126,25 @@ enum GameCompatibility {
         return entries.first { normalize($0.title) == normalized }
     }
 
-    /// What an entry means for a bottle running on `engine`.
+    /// Why `engine` cannot run the title, or nil when nothing rules it out.
     static func assessment(of entry: Entry, engine: WineEngine?) -> String? {
-        guard let minimum = entry.minimumCrossOverMajor else { return nil }
+        guard let minimum = entry.minimumCrossOverVersion else { return nil }
         guard let engine else { return "Needs CrossOver \(minimum) or later; this bottle has no engine selected." }
         guard engine.kind == .crossOver else {
-            return "Needs CrossOver \(minimum) or later. \(engine.name) cannot run it."
+            return "Needs CrossOver \(minimum) or later. \(engine.name) cannot run it, and this bottle cannot be switched to CrossOver: create a new CrossOver bottle and install Steam in it."
         }
-        if let major = engine.majorVersion, major < minimum {
+        if let version = engine.version, Bottle.compareVersions(version, minimum) == .orderedAscending {
             return "Needs CrossOver \(minimum) or later; this bottle uses \(engine.name)."
         }
         return nil
+    }
+
+    /// A softer note when the engine works but an update is recommended.
+    static func advisory(of entry: Entry, engine: WineEngine?) -> String? {
+        guard let recommended = entry.recommendedCrossOverVersion, let engine, engine.kind == .crossOver,
+              let version = engine.version, Bottle.compareVersions(version, recommended) == .orderedAscending
+        else { return nil }
+        return "CrossOver \(recommended) or later is recommended; it fixed \(entry.title) not launching after a game update."
     }
 
     /// Lowercased alphanumerics and single spaces; strips ™ and ® so

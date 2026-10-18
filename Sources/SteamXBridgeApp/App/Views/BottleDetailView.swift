@@ -6,8 +6,12 @@ struct BottleDetailView: View {
     @EnvironmentObject private var model: AppModel
     let bottleID: UUID
     @State private var tab: Tab = .programs
-    @State private var choosingProgram = false
-    @State private var choosingInstaller = false
+    /// One file importer serves every file action (two importers on one view
+    /// would conflict, and only one of them would ever be presented).
+    @State private var importKind: ImportKind?
+    @State private var pendingImportKind: ImportKind?
+
+    enum ImportKind { case run, install, pin }
 
     enum Tab: String, CaseIterable, Identifiable {
         case programs = "Programs", settings = "Settings", tools = "Tools", logs = "Logs"
@@ -19,7 +23,10 @@ struct BottleDetailView: View {
             VStack(spacing: 0) {
                 BottleHeader(bottle: bottle)
                 Picker("Section", selection: $tab) {
-                    ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(Tab.allCases) { item in
+                        // A dot marks Settings while edits are waiting to be applied.
+                        Text(item == .settings && model.settingsDrafts[bottle.id] != nil ? "Settings •" : item.rawValue).tag(item)
+                    }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -36,35 +43,52 @@ struct BottleDetailView: View {
             .navigationTitle(bottle.name)
             .toolbar {
                 ToolbarItemGroup {
-                    Button { choosingProgram = true } label: {
+                    Button { choose(.run) } label: {
                         Label("Run Command…", systemImage: "play.rectangle")
                     }
                     .help("Run a Windows program (.exe, .msi, .bat, .lnk) in this bottle")
-                    Button { choosingInstaller = true } label: {
+                    Button { choose(.install) } label: {
                         Label("Install Software…", systemImage: "square.and.arrow.down")
                     }
                     .help("Run an installer in this bottle")
+                    Button { choose(.pin) } label: {
+                        Label("Pin Program…", systemImage: "pin")
+                    }
+                    .help("Add a Windows program to this bottle's Programs")
                     Button { model.refreshContents(bottle.id) } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
                 }
             }
-            .fileImporter(isPresented: $choosingProgram, allowedContentTypes: Self.windowsTypes) { result in
-                guard case .success(let url) = result else { return }
-                model.launch(.program(url, arguments: [], workingDirectory: nil), in: bottle)
-            }
-            .fileImporter(isPresented: $choosingInstaller, allowedContentTypes: Self.windowsTypes) { result in
-                guard case .success(let url) = result else { return }
-                model.launch(.program(url, arguments: [], workingDirectory: nil), in: bottle)
-                tab = .programs
+            .fileImporter(isPresented: Binding(get: { importKind != nil }, set: { if !$0 { importKind = nil } }),
+                          allowedContentTypes: Self.windowsTypes) { result in
+                // The binding may already have cleared importKind; read the copy.
+                let kind = pendingImportKind
+                pendingImportKind = nil
+                guard case .success(let url) = result, let kind else { return }
+                switch kind {
+                case .run:
+                    model.launch(.program(url, arguments: [], workingDirectory: nil), in: bottle)
+                case .install:
+                    model.launch(.program(url, arguments: [], workingDirectory: nil), in: bottle, waitForChildren: true)
+                    tab = .programs
+                case .pin:
+                    model.pin(url, in: bottle)
+                    tab = .programs
+                }
             }
             .onChange(of: model.runCommandBottleID) { _, id in
                 if id == bottle.id {
-                    choosingProgram = true
+                    choose(.run)
                     model.runCommandBottleID = nil
                 }
             }
         }
+    }
+
+    private func choose(_ kind: ImportKind) {
+        pendingImportKind = kind
+        importKind = kind
     }
 
     /// .exe, .msi, .bat and .lnk, plus anything else so oddly named files can still be picked.
@@ -162,6 +186,9 @@ struct ProgramsView: View {
                                 .contextMenu {
                                     Button("Run") { run(program) }
                                     if let target = program.target {
+                                        Button("Pin to Programs") {
+                                            model.pin(target, arguments: program.arguments.map(WindowsCommandLine.split) ?? [], in: bottle)
+                                        }
                                         Button("Show in Finder") { model.reveal(target) }
                                     }
                                 }
@@ -213,6 +240,12 @@ struct ProgramsView: View {
                              ? "Install games from Steam; they appear here."
                              : "\(contents.steamApps.count) installed game\(contents.steamApps.count == 1 ? "" : "s")")
                             .foregroundStyle(.secondary)
+                    }
+                    if let engine = model.engine(for: bottle), !engine.isCrossOver {
+                        Text("On \(engine.name), Steam's window may stay black (a known Wine problem with Steam's web view). If it does, CrossOver is the dependable engine for Steam.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                         ForEach(contents.steamApps) { app in
@@ -305,6 +338,8 @@ struct SteamGameTile: View {
     @State private var showingInfo = false
 
     private var entry: GameCompatibility.Entry? { GameCompatibility.lookup(appID: app.appID, name: app.name) }
+    /// Why this bottle's engine cannot run the game, if it cannot.
+    private var problem: String? { entry.flatMap { GameCompatibility.assessment(of: $0, engine: model.engine(for: bottle)) } }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -316,7 +351,14 @@ struct SteamGameTile: View {
                 Text(app.name)
                     .lineLimit(2)
                 HStack(spacing: 6) {
-                    if let entry {
+                    if problem != nil {
+                        Text("Needs CrossOver")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.18), in: Capsule())
+                            .foregroundStyle(.orange)
+                    } else if let entry {
                         CompatibilityBadge(rating: entry.rating)
                     }
                     if !app.isFullyInstalled {
@@ -357,7 +399,7 @@ struct SteamGameTile: View {
                 }
             }
             Button("Show in Finder") { model.reveal(app.installDirectory) }
-            if let entry, entry.recommendation != nil {
+            if let entry, entry.recommendation != nil, problem == nil {
                 Divider()
                 Button("Apply Recommended Settings") { model.applyRecommendation(entry, to: bottle) }
             }
@@ -401,13 +443,20 @@ struct CompatibilityPopover: View {
             if let antiCheat = entry.antiCheat {
                 Text("Anti-cheat: \(antiCheat)").font(.callout).foregroundStyle(.secondary)
             }
-            if let problem = GameCompatibility.assessment(of: entry, engine: model.engine(for: bottle)) {
+            let engine = model.engine(for: bottle)
+            let problem = GameCompatibility.assessment(of: entry, engine: engine)
+            if let problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let advisory = GameCompatibility.advisory(of: entry, engine: engine) {
+                Label(advisory, systemImage: "arrow.up.circle")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(entry.note)
                 .fixedSize(horizontal: false, vertical: true)
-            if entry.recommendation != nil {
+            if entry.recommendation != nil, problem == nil {
                 Button("Apply Recommended Settings to \(bottle.name)") { model.applyRecommendation(entry, to: bottle) }
             }
             Text("Last checked \(entry.asOf). Game updates can change this.")

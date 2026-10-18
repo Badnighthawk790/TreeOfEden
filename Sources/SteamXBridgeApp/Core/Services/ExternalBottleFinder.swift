@@ -8,6 +8,9 @@ struct ExternalBottle: Equatable, Identifiable {
     let source: String
     /// True when the Windows Steam client is installed inside it.
     let hasSteam: Bool
+    /// Which engine created it, when known: a Whisky bundle identifier, a
+    /// Sikarugir wrapper path, or "gptk" for the Game Porting Toolkit prefix.
+    var engineHint: String? = nil
 
     var id: String { prefix.standardizedFileURL.path }
 }
@@ -27,14 +30,15 @@ struct ExternalBottleFinder {
     func discover() -> [ExternalBottle] {
         var found: [ExternalBottle] = []
         var seen = Set<String>()
-        func add(_ name: String, _ prefix: URL, _ source: String) {
+        func add(_ name: String, _ prefix: URL, _ source: String, hint: String? = nil) {
             let key = prefix.canonicalPath
             guard BottleStore.looksLikePrefix(prefix), seen.insert(key).inserted else { return }
             found.append(ExternalBottle(
                 name: name,
                 prefix: prefix.standardizedFileURL,
                 source: source,
-                hasSteam: SteamInstallation.locate(inPrefix: prefix) != nil
+                hasSteam: SteamInstallation.locate(inPrefix: prefix) != nil,
+                engineHint: hint
             ))
         }
 
@@ -56,20 +60,22 @@ struct ExternalBottleFinder {
             var whiskyFolders = subdirectories(of: container.appendingPathComponent("Bottles", isDirectory: true))
             whiskyFolders += whiskyTrackedPaths(plist: container.appendingPathComponent("BottleVM.plist"))
             for folder in whiskyFolders {
-                add(whiskyBottleName(at: folder) ?? folder.lastPathComponent, folder, "Whisky")
+                add(whiskyBottleName(at: folder) ?? folder.lastPathComponent, folder, "Whisky", hint: identifier)
             }
         }
 
         // Sikarugir wrappers keep their prefix inside the wrapper app.
         for wrapper in EngineDiscovery(home: home).sikarugirWrappers() {
             add(wrapper.deletingPathExtension().lastPathComponent,
-                wrapper.appendingPathComponent("Contents/SharedSupport/prefix", isDirectory: true), "Sikarugir")
+                wrapper.appendingPathComponent("Contents/SharedSupport/prefix", isDirectory: true), "Sikarugir",
+                hint: wrapper.path)
         }
 
         // Plain Wine and the Game Porting Toolkit README's suggested prefix.
         for relative in [".wine", "my-game-prefix"] {
             let prefix = home.appendingPathComponent(relative, isDirectory: true)
-            add(relative == ".wine" ? "Default Wine prefix" : "my-game-prefix", prefix, "Wine prefix")
+            add(relative == ".wine" ? "Default Wine prefix" : "my-game-prefix", prefix, "Wine prefix",
+                hint: relative == "my-game-prefix" ? "gptk" : nil)
         }
 
         return found

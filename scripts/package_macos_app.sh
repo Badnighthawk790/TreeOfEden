@@ -83,6 +83,10 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>public.app-category.games</string>
   <key>NSHumanReadableCopyright</key>
   <string>SteamXBridge drives Wine engines you install separately; it bundles none.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Windows games and programs you run in a bottle can use the microphone, for example for Steam or in-game voice chat.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Windows programs you run in a bottle can use the camera.</string>
 </dict>
 </plist>
 PLIST
@@ -92,6 +96,9 @@ PLIST
 # "Open Anyway" step (see README). Signing failures are fatal.
 codesign --force --sign - --timestamp=none "${APP_DIR}"
 codesign --verify --strict --verbose=2 "${APP_DIR}"
+# Wine children are attributed to this app for privacy checks; without these
+# strings macOS kills a game the moment it opens the microphone.
+plutil -extract NSMicrophoneUsageDescription raw "${CONTENTS_DIR}/Info.plist" >/dev/null
 
 rm -f "${ZIP_PATH}"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${APP_DIR}" "${ZIP_PATH}"

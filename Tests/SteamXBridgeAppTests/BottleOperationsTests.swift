@@ -154,6 +154,89 @@ final class BottleOperationsTests: XCTestCase {
         XCTAssertTrue(log.contains("# env WINEPREFIX=\(bottle.prefixPath)"))
     }
 
+    func testLinkedCrossOverBottleKeepsItsOwnSettings() async throws {
+        let tmp = try TemporaryDirectory()
+        let bottles = try tmp.directory("CrossOverBottles")
+        let ops = try operations(tmp, bottles: bottles)
+        let prefix = try tmp.directory("CrossOverBottles/Steam/drive_c").deletingLastPathComponent()
+        try tmp.file("CrossOverBottles/Steam/cxbottle.conf", contents: """
+        ;; written by CrossOver
+        [Bottle]
+        "Template" = "win10_64"
+        [EnvironmentVariables]
+        "CX_GRAPHICS_BACKEND" = "dxvk"
+        "D3DM_ENABLE_METALFX" = "1"
+        """)
+        let linked = try ops.store.linkBottle(prefix: prefix, named: "Steam", source: "CrossOver", existing: [])
+        XCTAssertEqual(linked.settings.graphics, .dxvk)
+        XCTAssertFalse(linked.settings.msync)
+        XCTAssertTrue(linked.settings.dlssMetalFX)
+
+        var renamed = linked
+        renamed.name = "Steam (games)"
+        try await ops.applySettings(from: linked, to: renamed, engine: try fakeCrossOver(tmp, bottles: bottles))
+        let config = try XCTUnwrap(CrossOverBottleConfig(contentsOf: prefix.appendingPathComponent("cxbottle.conf")))
+        XCTAssertEqual(config.value(section: "EnvironmentVariables", key: "CX_GRAPHICS_BACKEND"), "dxvk")
+        XCTAssertEqual(config.value(section: "EnvironmentVariables", key: "D3DM_ENABLE_METALFX"), "1")
+        XCTAssertNil(config.value(section: "EnvironmentVariables", key: "WINEMSYNC"))
+        XCTAssertNil(config.value(section: "EnvironmentVariables", key: "ROSETTA_ADVERTISE_AVX"), "a rename writes nothing")
+
+        var changed = renamed
+        changed.settings.metalHUD = true
+        try await ops.applySettings(from: renamed, to: changed, engine: try fakeCrossOver(tmp, bottles: bottles))
+        let after = try XCTUnwrap(CrossOverBottleConfig(contentsOf: prefix.appendingPathComponent("cxbottle.conf")))
+        XCTAssertEqual(after.value(section: "EnvironmentVariables", key: "MTL_HUD_ENABLED"), "1", "only the changed key is written")
+        XCTAssertEqual(after.value(section: "EnvironmentVariables", key: "CX_GRAPHICS_BACKEND"), "dxvk")
+    }
+
+    func testFailedCrossOverCreateCleansUpForARetry() async throws {
+        let tmp = try TemporaryDirectory()
+        let bottles = try tmp.directory("CrossOverBottles")
+        let ops = try operations(tmp, bottles: bottles)
+        var engine = try fakeCrossOver(tmp, bottles: bottles)
+        // A cxbottle that half-creates the bottle and then fails.
+        let broken = try tmp.file("Broken.app/Contents/SharedSupport/CrossOver/bin/cxbottle", contents: """
+        #!/bin/sh
+        case "$*" in *--create*) mkdir -p "\(bottles.path)/$2/drive_c"; exit 3 ;; esac
+        exit 0
+        """, executable: true)
+        try tmp.file("Broken.app/Contents/SharedSupport/CrossOver/bin/wine", contents: "#!/bin/sh\nexit 0\n", executable: true)
+        engine.loaderPath = broken.deletingLastPathComponent().appendingPathComponent("wine").path
+        do {
+            _ = try await ops.createCrossOverBottle(named: "Steam", engine: engine, windowsVersion: .win10,
+                                                    settings: BottleSettings(), existing: [])
+            XCTFail("expected a failure")
+        } catch {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bottles.appendingPathComponent("Steam").path), "the half-made bottle is gone")
+        XCTAssertTrue(ops.store.loadBottles().bottles.isEmpty)
+    }
+
+    func testSteamInstallOnCrossOverWaitsForChildren() async throws {
+        let tmp = try TemporaryDirectory()
+        let bottles = try tmp.directory("CrossOverBottles")
+        var ops = try operations(tmp, bottles: bottles)
+        let argsFile = tmp.url.appendingPathComponent("args.txt")
+        let bin = "CX.app/Contents/SharedSupport/CrossOver/bin"
+        let wrapper = try tmp.file("\(bin)/wine", contents: """
+        #!/bin/sh
+        echo "$*" >> "\(argsFile.path)"
+        mkdir -p "\(bottles.path)/Steam/drive_c/Program Files (x86)/Steam"
+        : > "\(bottles.path)/Steam/drive_c/Program Files (x86)/Steam/steam.exe"
+        exit 0
+        """, executable: true)
+        let engine = WineEngine(kind: .crossOver, name: "CrossOver 26.3.0", version: "26.3.0", loaderPath: wrapper.path,
+                                wineserverPath: nil, bundlePath: nil, dxvkSourcePath: nil, architectures: [],
+                                features: [.d3dMetal, .msync])
+        let prefix = try tmp.directory("CrossOverBottles/Steam/drive_c").deletingLastPathComponent()
+        try tmp.file("CrossOverBottles/Steam/cxbottle.conf", contents: "[Bottle]\n")
+        let bottle = try ops.store.linkBottle(prefix: prefix, named: "Steam", source: "CrossOver", existing: [])
+        ops.download = { _, destination in try Data([0x4D, 0x5A]).write(to: destination) }
+        _ = try await ops.installSteam(in: bottle, engine: engine)
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        XCTAssertTrue(args.contains("--bottle Steam"), args)
+        XCTAssertTrue(args.contains("--wait-children"), args)
+    }
+
     func testCrossOverBottleNamesAndTemplates() throws {
         XCTAssertEqual(try BottleOperations.crossOverBottleName("..Steam: Main/2"), "Steam- Main-2")
         XCTAssertThrowsError(try BottleOperations.crossOverBottleName("..."))

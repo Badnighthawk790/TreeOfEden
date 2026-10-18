@@ -19,8 +19,20 @@ struct RunRecord: Identifiable {
     let logURL: URL
     let wineLogURL: URL?
     var exitStatus: Int32?
+    /// A Steam game launch: steam.exe hands the game to the running client and
+    /// exits, so its exit says nothing about the game itself.
+    var launchedThroughSteam = false
+    /// Set when the user force-quit the bottle, so the exit is not reported as a crash.
+    var stopRequested = false
 
     var isRunning: Bool { exitStatus == nil }
+
+    var statusText: String {
+        guard let exitStatus else { return "Running" }
+        if launchedThroughSteam, exitStatus == 0 { return "Started through Steam" }
+        if stopRequested { return "Stopped" }
+        return "Exited with status \(exitStatus)"
+    }
 }
 
 struct AppAlert: Identifiable {
@@ -39,6 +51,13 @@ struct LaunchRequest: Identifiable {
     let message: String
     /// False when launching cannot work at all (for example an engine mismatch).
     let canLaunchAnyway: Bool
+}
+
+/// Settings that can only be applied with the bottle's programs closed.
+struct PendingApply: Identifiable {
+    let id = UUID()
+    let old: Bottle
+    let updated: Bottle
 }
 
 @MainActor
@@ -62,6 +81,11 @@ final class AppModel: ObservableObject {
     @Published var launchRequest: LaunchRequest?
     /// Set to ask for confirmation before removing a bottle.
     @Published var bottlePendingRemoval: Bottle?
+    /// Set to ask whether to quit a bottle's programs before applying settings.
+    @Published var pendingApply: PendingApply?
+    /// Unapplied edits from the Settings tab, kept per bottle so switching tabs
+    /// or bottles never drops them.
+    @Published var settingsDrafts: [UUID: Bottle] = [:]
     @Published var showingNewBottle = false
     /// Set to present the "Run Command…" file picker for a bottle.
     @Published var runCommandBottleID: UUID?
@@ -117,6 +141,18 @@ final class AppModel: ObservableObject {
         runs.filter { $0.bottleID == bottleID }.sorted { $0.startedAt > $1.startedAt }
     }
 
+    /// True while an operation runs in the bottle or one of its programs is open.
+    func isBusy(_ bottle: Bottle) -> Bool {
+        activity[bottle.id] != nil || runs(for: bottle.id).contains(where: \.isRunning)
+    }
+
+    /// Everything that would be interrupted by quitting the app.
+    var workInProgress: [String] {
+        var items = activity.compactMap { id, title in bottle(id).map { "\(title) in \($0.name)" } }
+        if let globalActivity { items.append(globalActivity) }
+        return items.sorted()
+    }
+
     // MARK: Loading
 
     func reload() {
@@ -167,24 +203,57 @@ final class AppModel: ObservableObject {
                 result.programs = ProgramDiscovery(prefix: bottle.prefixURL).programs()
                 return result
             }.value
-            contents[id] = scanned
+            if self.bottle(id) != nil { contents[id] = scanned }
         }
     }
 
     // MARK: Running work
 
     /// Runs `work`, showing `title` as the bottle's (or the app's) activity and
-    /// turning any error into an alert.
-    private func perform(_ title: String, on bottleID: UUID?, _ work: @escaping () async throws -> Void) {
+    /// turning any error into an alert. Exclusive work refuses to start while
+    /// another operation runs in the same bottle; the check and the claim happen
+    /// synchronously, so two clicks can never both start.
+    @discardableResult
+    private func perform(_ title: String, on bottleID: UUID?, exclusive: Bool = true,
+                         _ work: @escaping () async throws -> Void) -> Bool {
+        if let bottleID {
+            if exclusive {
+                if let current = activity[bottleID] {
+                    alert = AppAlert(title: "\(title) can wait", message: "\(current) is still running in this bottle.")
+                    return false
+                }
+                activity[bottleID] = title
+            }
+        } else {
+            if let current = globalActivity {
+                alert = AppAlert(title: "\(title) can wait", message: "\(current) is still running.")
+                return false
+            }
+            globalActivity = title
+        }
         Task {
-            if let bottleID { activity[bottleID] = title } else { globalActivity = title }
             do {
                 try await work()
             } catch {
                 alert = AppAlert(title: "\(title) failed", message: error.localizedDescription)
             }
-            if let bottleID { activity[bottleID] = nil } else { globalActivity = nil }
+            if let bottleID {
+                if exclusive { activity[bottleID] = nil }
+            } else {
+                globalActivity = nil
+            }
         }
+        return true
+    }
+
+    /// The bottle's engine, or an explanatory alert when there is none.
+    private func requireEngine(for bottle: Bottle) -> WineEngine? {
+        if let engine = engine(for: bottle) { return engine }
+        alert = AppAlert(title: "No engine for \(bottle.name)",
+                         message: bottle.isCrossOverBottle
+                            ? "This is a CrossOver bottle. Install CrossOver to run it."
+                            : "Install a Wine engine (CrossOver, the Game Porting Toolkit, or Wine) and check Settings > Engines.")
+        return nil
     }
 
     // MARK: Bottles
@@ -192,6 +261,8 @@ final class AppModel: ObservableObject {
     func createBottle(named name: String, engine: WineEngine, windowsVersion: WindowsVersion, installSteam: Bool) {
         let ops = operations
         let existing = bottles
+        // Steam's client needs Windows 10 or later.
+        let wantsSteam = installSteam && (windowsVersion == .win10 || windowsVersion == .win11)
         perform("Creating \(name)", on: nil) {
             let bottle = engine.isCrossOver
                 ? try await ops.createCrossOverBottle(named: name, engine: engine, windowsVersion: windowsVersion,
@@ -199,8 +270,14 @@ final class AppModel: ObservableObject {
                 : try await ops.createPlainBottle(named: name, engine: engine, windowsVersion: windowsVersion,
                                                   settings: BottleSettings())
             self.insert(bottle)
-            if installSteam { self.installSteam(in: bottle.id) }
+            if wantsSteam { self.installSteam(in: bottle.id) }
         }
+    }
+
+    /// True when a CrossOver bottle of that name already exists (the name is its folder).
+    func crossOverBottleExists(named name: String) -> Bool {
+        guard let folder = try? BottleOperations.crossOverBottleName(name) else { return false }
+        return FileManager.default.fileExists(atPath: crossOverBottleDirectory.appendingPathComponent(folder).path)
     }
 
     func link(_ external: ExternalBottle) {
@@ -216,24 +293,40 @@ final class AppModel: ObservableObject {
     }
 
     func linkFolder(_ url: URL) {
-        let source = FileManager.default.fileExists(atPath: url.appendingPathComponent("cxbottle.conf").path)
-            ? ExternalBottleFinder.crossOverSource : "Wine prefix"
-        link(ExternalBottle(name: url.lastPathComponent, prefix: url, source: source,
+        let isCrossOver = FileManager.default.fileExists(atPath: url.appendingPathComponent("cxbottle.conf").path)
+        // CrossOver can only run bottles in its own folder; refuse one elsewhere
+        // instead of adding a bottle nothing can run.
+        if isCrossOver, url.deletingLastPathComponent().canonicalPath != crossOverBottleDirectory.canonicalPath {
+            alert = AppAlert(title: "Not in CrossOver's Bottles folder",
+                             message: LaunchPlanError.crossOverBottleOutsideLibrary(crossOverBottleDirectory.path).errorDescription ?? "")
+            return
+        }
+        link(ExternalBottle(name: url.lastPathComponent, prefix: url,
+                            source: isCrossOver ? ExternalBottleFinder.crossOverSource : "Wine prefix",
                             hasSteam: SteamInstallation.locate(inPrefix: url) != nil))
     }
 
     private func preferredEngine(for external: ExternalBottle) -> WineEngine? {
         let ordered = Self.ordered(engines)
+        let anyPlain = ordered.first { !$0.isCrossOver }
         switch external.source {
         case ExternalBottleFinder.crossOverSource:
             return ordered.first(where: \.isCrossOver)
         case "Whisky":
-            return ordered.first { $0.kind == .whisky } ?? ordered.first { !$0.isCrossOver }
+            // The bottle's own Whisky (original or community fork) first.
+            if let hint = external.engineHint,
+               let own = ordered.first(where: { $0.kind == .whisky && $0.loaderPath.contains("/\(hint)/") }) {
+                return own
+            }
+            return ordered.first { $0.kind == .whisky } ?? anyPlain
         case "Sikarugir":
             return ordered.first { $0.kind == .sikarugir && $0.bundlePath.map { external.prefix.path.hasPrefix($0) } == true }
-                ?? ordered.first { !$0.isCrossOver }
+                ?? anyPlain
         default:
-            return ordered.first { !$0.isCrossOver }
+            if external.engineHint == "gptk", let gptk = ordered.first(where: { $0.kind == .gamePortingToolkit }) {
+                return gptk
+            }
+            return anyPlain
         }
     }
 
@@ -245,36 +338,113 @@ final class AppModel: ObservableObject {
         refreshContents(bottle.id)
     }
 
-    /// Saves edited settings, then applies the parts that live outside the
-    /// launch environment (cxbottle.conf, registry, Windows version, DXVK files).
+    /// Saves edited settings and applies them. Changes that need the bottle's
+    /// wineserver stopped (CrossOver's cxbottle.conf, sync mode, engine) ask
+    /// first when programs are running in it.
     func save(_ updated: Bottle) {
         guard let old = bottle(updated.id) else { return }
-        do {
-            try store.save(updated)
-        } catch {
-            alert = AppAlert(title: "Could not save \(updated.name)", message: error.localizedDescription)
+        if activity[updated.id] != nil {
+            alert = AppAlert(title: "Settings can wait", message: "\(activity[updated.id] ?? "An operation") is still running in this bottle.")
             return
         }
-        if let index = bottles.firstIndex(where: { $0.id == updated.id }) { bottles[index] = updated }
-        guard let engine = self.engine(for: updated) else { return }
+        let settingsChanged = old.settings != updated.settings || old.windowsVersion != updated.windowsVersion
+            || old.engineID != updated.engineID
+        guard settingsChanged else {
+            persist(updated) // a rename: nothing to apply
+            clearDraft(ifMatching: updated)
+            return
+        }
+        let running = runs(for: updated.id).contains(where: \.isRunning)
+        let needsStop = updated.isCrossOverBottle || old.settings.msync != updated.settings.msync
+            || old.settings.esync != updated.settings.esync || old.engineID != updated.engineID
+        if running, needsStop {
+            pendingApply = PendingApply(old: old, updated: updated)
+            return
+        }
+        apply(old: old, updated: updated, quitFirst: false)
+    }
+
+    func confirmPendingApply(quitFirst: Bool) {
+        guard let pending = pendingApply else { return }
+        pendingApply = nil
+        apply(old: pending.old, updated: pending.updated, quitFirst: quitFirst)
+    }
+
+    private func apply(old: Bottle, updated: Bottle, quitFirst: Bool) {
+        guard let engine = self.engine(for: updated) else {
+            persist(updated)
+            clearDraft(ifMatching: updated)
+            alert = AppAlert(title: "Settings saved",
+                             message: "They will be applied when a compatible engine is installed.")
+            return
+        }
         let ops = operations
+        persist(updated)
+        clearDraft(ifMatching: updated)
+        if quitFirst { markStopRequested(updated.id) }
         perform("Applying settings", on: updated.id) {
-            try await ops.applySettings(from: old, to: updated, engine: engine)
+            do {
+                if quitFirst { try await ops.forceQuit(updated, engine: engine) }
+                try await ops.applySettings(from: old, to: updated, engine: engine)
+            } catch {
+                // Roll back so the change shows as unapplied and Apply can retry it.
+                if self.bottle(updated.id) == updated {
+                    self.persist(old)
+                    self.settingsDrafts[updated.id] = updated
+                }
+                throw error
+            }
         }
     }
 
+    /// True when two versions of a bottle agree on everything the Settings tab edits.
+    static func sameSettings(_ a: Bottle, _ b: Bottle) -> Bool {
+        a.name == b.name && a.engineID == b.engineID && a.windowsVersion == b.windowsVersion && a.settings == b.settings
+    }
+
+    /// Drops the Settings draft once what was saved matches it (other pending
+    /// edits in the draft survive).
+    private func clearDraft(ifMatching saved: Bottle) {
+        if let draft = settingsDrafts[saved.id], Self.sameSettings(draft, saved) { settingsDrafts[saved.id] = nil }
+    }
+
+    /// Applies a compatibility entry's recommended settings, but only on an
+    /// engine that can run the title, and only renderers that engine offers.
     func applyRecommendation(_ entry: GameCompatibility.Entry, to bottle: Bottle) {
         guard let recommendation = entry.recommendation else { return }
-        var updated = bottle
-        recommendation.apply(to: &updated.settings)
-        save(updated)
+        let engine = engine(for: bottle)
+        if let problem = GameCompatibility.assessment(of: entry, engine: engine) {
+            alert = AppAlert(title: "\(entry.title) cannot run in \(bottle.name)", message: problem)
+            return
+        }
+        func recommended(_ base: Bottle) -> Bottle {
+            var result = base
+            recommendation.apply(to: &result.settings)
+            if let engine, !engine.graphicsBackends.contains(result.settings.graphics) {
+                result.settings.graphics = base.settings.graphics
+            }
+            return result
+        }
+        // Keep an open Settings draft consistent, so a later Apply does not undo this.
+        if let draft = settingsDrafts[bottle.id] { settingsDrafts[bottle.id] = recommended(draft) }
+        save(recommended(bottle))
     }
 
     func duplicate(_ bottle: Bottle) {
+        guard !isBusy(bottle) else {
+            alert = AppAlert(title: "\(bottle.name) is in use",
+                             message: "Quit its programs (Force Quit) and wait for the current operation to finish first.")
+            return
+        }
+        let bottleEngine = self.engine(for: bottle)
+        if bottle.isCrossOverBottle, bottleEngine == nil {
+            alert = AppAlert(title: "Install CrossOver to duplicate \(bottle.name)",
+                             message: "CrossOver bottles are copied with CrossOver's own tool, so CrossOver can still run the copy.")
+            return
+        }
         let ops = operations
         let store = self.store
         let existing = bottles
-        let bottleEngine = self.engine(for: bottle)
         perform("Duplicating \(bottle.name)", on: bottle.id) {
             let copy: Bottle
             if bottle.isCrossOverBottle, let bottleEngine {
@@ -289,11 +459,17 @@ final class AppModel: ObservableObject {
     }
 
     func remove(_ bottle: Bottle) {
+        guard !isBusy(bottle) else {
+            alert = AppAlert(title: "\(bottle.name) is in use",
+                             message: "Quit its programs (Force Quit) and wait for the current operation to finish first.")
+            return
+        }
         do {
             try store.remove(bottle)
             bottles.removeAll { $0.id == bottle.id }
             contents[bottle.id] = nil
-            selection = bottles.first?.id
+            settingsDrafts[bottle.id] = nil
+            if selection == bottle.id { selection = bottles.first?.id }
             rescanExternalBottles()
         } catch {
             alert = AppAlert(title: "Could not remove \(bottle.name)", message: error.localizedDescription)
@@ -302,10 +478,11 @@ final class AppModel: ObservableObject {
 
     // MARK: Programs
 
-    func pin(_ url: URL, in bottle: Bottle) {
+    func pin(_ url: URL, arguments: [String] = [], in bottle: Bottle) {
         var updated = bottle
         guard !updated.pinnedPrograms.contains(where: { $0.path == url.path }) else { return }
-        updated.pinnedPrograms.append(PinnedProgram(name: url.deletingPathExtension().lastPathComponent, path: url.path))
+        updated.pinnedPrograms.append(PinnedProgram(name: url.deletingPathExtension().lastPathComponent,
+                                                    path: url.path, arguments: arguments))
         persist(updated)
     }
 
@@ -329,14 +506,8 @@ final class AppModel: ObservableObject {
 
     /// Launches a target. Steam games flagged by the compatibility database ask
     /// for confirmation first (or explain why they cannot run on this engine).
-    func launch(_ target: LaunchTarget, in bottle: Bottle, confirmed: Bool = false) {
-        guard let engine = self.engine(for: bottle) else {
-            alert = AppAlert(title: "No engine for \(bottle.name)",
-                             message: bottle.isCrossOverBottle
-                                ? "This is a CrossOver bottle. Install CrossOver to run it."
-                                : "Install a Wine engine (CrossOver, the Game Porting Toolkit, or Wine) and check Settings > Engines.")
-            return
-        }
+    func launch(_ target: LaunchTarget, in bottle: Bottle, confirmed: Bool = false, waitForChildren: Bool = false) {
+        guard let engine = requireEngine(for: bottle) else { return }
         if !confirmed, case .steamGame(let appID, _) = target, let entry = GameCompatibility.lookup(appID: appID, name: nil) {
             if let problem = GameCompatibility.assessment(of: entry, engine: engine) {
                 launchRequest = LaunchRequest(target: target, bottleID: bottle.id, title: "\(entry.title) needs CrossOver",
@@ -359,11 +530,14 @@ final class AppModel: ObservableObject {
 
         let runID = UUID()
         do {
-            let running = try operations.launch(target, in: bottle, engine: engine, runID: runID) { [weak self] status in
+            let running = try operations.launch(target, in: bottle, engine: engine, runID: runID,
+                                                waitForChildren: waitForChildren) { [weak self] status in
                 Task { @MainActor in self?.finishRun(runID, status: status) }
             }
-            runs.append(RunRecord(id: runID, bottleID: bottle.id, name: running.name, startedAt: running.startedAt,
-                                  logURL: running.logURL, wineLogURL: running.wineLogURL))
+            var record = RunRecord(id: runID, bottleID: bottle.id, name: running.name, startedAt: running.startedAt,
+                                   logURL: running.logURL, wineLogURL: running.wineLogURL)
+            if case .steamGame = target { record.launchedThroughSteam = true }
+            runs.append(record)
         } catch {
             alert = AppAlert(title: "Could not start \(target.displayName)", message: error.localizedDescription)
         }
@@ -379,48 +553,63 @@ final class AppModel: ObservableObject {
         guard let index = runs.firstIndex(where: { $0.id == id }) else { return }
         runs[index].exitStatus = status
         let run = runs[index]
-        // A quick non-zero exit usually means the program never started; point at the log.
-        if status != 0, Date().timeIntervalSince(run.startedAt) < 15 {
+        // A quick non-zero exit usually means the program never started; point at
+        // the log. Not when the user stopped it, and not for Steam's hand-off.
+        if status != 0, !run.stopRequested, !run.launchedThroughSteam, Date().timeIntervalSince(run.startedAt) < 15 {
             alert = AppAlert(title: "\(run.name) exited with status \(status)",
                              message: "It stopped right after starting. The log may say why:\n\(run.logURL.path)")
         }
-        if let bottleID = runs.first(where: { $0.id == id })?.bottleID { refreshContents(bottleID) }
+        refreshContents(run.bottleID)
+    }
+
+    private func markStopRequested(_ bottleID: UUID) {
+        for index in runs.indices where runs[index].bottleID == bottleID && runs[index].isRunning {
+            runs[index].stopRequested = true
+        }
     }
 
     func forceQuit(_ bottle: Bottle) {
-        guard let engine = self.engine(for: bottle) else { return }
+        guard let engine = requireEngine(for: bottle) else { return }
         let ops = operations
-        perform("Force quitting", on: bottle.id) { try await ops.forceQuit(bottle, engine: engine) }
+        markStopRequested(bottle.id)
+        // Not exclusive: Force Quit must work even while another operation hangs.
+        perform("Force quitting", on: bottle.id, exclusive: false) { try await ops.forceQuit(bottle, engine: engine) }
     }
 
     func simulateReboot(_ bottle: Bottle) {
-        guard let engine = self.engine(for: bottle) else { return }
+        guard let engine = requireEngine(for: bottle) else { return }
         let ops = operations
         perform("Simulating reboot", on: bottle.id) { try await ops.simulateReboot(bottle, engine: engine) }
     }
 
     func installSteam(in bottleID: UUID) {
-        guard let bottle = self.bottle(bottleID), let engine = self.engine(for: bottle) else { return }
+        guard let bottle = self.bottle(bottleID), let engine = requireEngine(for: bottle) else { return }
+        guard bottle.windowsVersion == .win10 || bottle.windowsVersion == .win11 else {
+            alert = AppAlert(title: "Steam needs Windows 10 or later",
+                             message: "Set this bottle's Windows version to Windows 10 or 11 in Settings, or create a new bottle for Steam.")
+            return
+        }
         let ops = operations
         perform("Installing Steam", on: bottleID) {
             let steam = try await ops.installSteam(in: bottle, engine: engine)
             self.refreshContents(bottleID)
             // Steam updates itself on its first run, as CrossOver's Steam install does.
-            self.launch(.steamClient(steam), in: bottle)
+            guard let current = self.bottle(bottleID) else { return } // removed meanwhile
+            self.launch(.steamClient(steam), in: current)
         }
     }
 
     // MARK: Engines
 
-    func addCustomEngine(at url: URL) {
+    /// Adds a custom engine; returns an error message for the Settings window.
+    func addCustomEngine(at url: URL) -> String? {
         guard let engine = EngineDiscovery.customEngine(at: url) else {
-            alert = AppAlert(title: "Not a Wine engine",
-                             message: "Choose an executable named \"wine\" or \"wine64\" (for CrossOver, its SharedSupport/CrossOver/bin/wine).")
-            return
+            return "Choose an engine app (CrossOver, Wine Stable, Game Porting Toolkit) or an executable named \"wine\" or \"wine64\"."
         }
-        guard !engines.contains(where: { $0.id == engine.id }) else { return }
+        guard !engines.contains(where: { $0.id == engine.id }) else { return "\(engine.name) is already listed." }
         customEngines.append(engine)
         saveCustomEngines()
+        return nil
     }
 
     func removeCustomEngine(_ engine: WineEngine) {

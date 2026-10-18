@@ -196,6 +196,7 @@ final class ExternalBottleFinderTests: XCTestCase {
 
         let found = ExternalBottleFinder(home: home).discover()
         XCTAssertEqual(found.map(\.source), ["CrossOver", "Whisky", "Whisky", "Wine prefix"])
+        XCTAssertEqual(found[1].engineHint, "com.isaacmarovitz.Whisky", "the engine that made the bottle is remembered")
         XCTAssertEqual(found.first?.name, "Steam")
         XCTAssertEqual(found.first?.hasSteam, true)
         XCTAssertEqual(found[1].name, "My Games")
@@ -262,6 +263,66 @@ final class BottleStoreTests: XCTestCase {
         XCTAssertEqual(copy.origin, .owned)
         XCTAssertEqual(try String(contentsOf: copy.driveC.appendingPathComponent("save.dat"), encoding: .utf8), "progress")
         XCTAssertEqual(store.loadBottles().bottles.count, 2)
+    }
+
+    func testDuplicateRebasesPinsAndRefusesCrossOverBottles() throws {
+        let tmp = try TemporaryDirectory()
+        let store = BottleStore(root: tmp.url, deletesToTrash: false)
+        var original = try store.createBottle(named: "Original")
+        original.pinnedPrograms = [
+            PinnedProgram(name: "Game", path: original.driveC.appendingPathComponent("Games/game.exe").path),
+            PinnedProgram(name: "Elsewhere", path: "/Volumes/Games/tool.exe"),
+        ]
+        try store.save(original)
+        let copy = try store.duplicate(original, named: "Copy")
+        XCTAssertTrue(copy.pinnedPrograms[0].path.hasPrefix(copy.prefixPath + "/"), "pins inside the prefix follow the copy")
+        XCTAssertEqual(copy.pinnedPrograms[1].path, "/Volumes/Games/tool.exe")
+        XCTAssertNotEqual(copy.pinnedPrograms[0].id, original.pinnedPrograms[0].id)
+
+        let crossOver = try tmp.directory("CrossOver/Bottles/Steam/drive_c").deletingLastPathComponent()
+        try tmp.file("CrossOver/Bottles/Steam/cxbottle.conf", contents: "[Bottle]\n")
+        let linked = try store.linkBottle(prefix: crossOver, named: "Steam", source: "CrossOver", existing: [])
+        XCTAssertThrowsError(try store.duplicate(linked, named: "Copy 2")) {
+            XCTAssertEqual($0 as? BottleStoreError, .crossOverBottleNeedsCrossOver)
+        }
+    }
+
+    func testFailedSaveLeavesNoOrphanedPrefix() throws {
+        let tmp = try TemporaryDirectory()
+        let store = BottleStore(root: tmp.url, deletesToTrash: false)
+        try tmp.file("Bottles", contents: "a file where the metadata folder should be")
+        XCTAssertThrowsError(try store.createBottle(named: "Broken"))
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: store.prefixesDirectory.path)) ?? []
+        XCTAssertTrue(leftovers.isEmpty)
+    }
+
+    func testRemoveRefusesUnsafeOwnedPaths() throws {
+        let tmp = try TemporaryDirectory()
+        let store = BottleStore(root: tmp.url.appendingPathComponent("store"), deletesToTrash: false)
+        try FileManager.default.createDirectory(at: store.prefixesDirectory, withIntermediateDirectories: true)
+        let precious = try tmp.directory("precious")
+        try tmp.file("precious/data.txt", contents: "keep me")
+
+        // The Prefixes folder itself, a symlink inside it, and a path escaping it.
+        let link = store.prefixesDirectory.appendingPathComponent("evil")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: precious)
+        for path in [store.prefixesDirectory.path, link.path, store.prefixesDirectory.path + "/../../precious"] {
+            var tampered = Bottle(name: "T", prefixPath: path, origin: .owned)
+            tampered.id = UUID()
+            try store.save(tampered)
+            try store.remove(tampered)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: precious.appendingPathComponent("data.txt").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.prefixesDirectory.path))
+    }
+
+    func testLinkingTheSamePrefixThroughASymlinkIsDetected() throws {
+        let tmp = try TemporaryDirectory()
+        let store = BottleStore(root: tmp.url.appendingPathComponent("store"), deletesToTrash: false)
+        let prefix = try tmp.directory("prefix/drive_c").deletingLastPathComponent()
+        let linked = try store.linkBottle(prefix: prefix, named: "A", source: nil, existing: [])
+        let alias = try tmp.symlink("alias", to: prefix.path)
+        XCTAssertThrowsError(try store.linkBottle(prefix: alias, named: "B", source: nil, existing: [linked]))
     }
 
     func testCorruptAndMinimalMetadata() throws {

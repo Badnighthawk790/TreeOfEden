@@ -42,7 +42,7 @@ final class EngineDiscoveryTests: XCTestCase {
 
         try tmp.file("home/Applications/Sikarugir/Diablo.app/Contents/SharedSupport/wine/bin/wine", data: armLoader, executable: true)
 
-        let engines = EngineDiscovery(home: home, applicationDirectories: [apps]).discover()
+        let engines = EngineDiscovery(home: home, applicationDirectories: [apps], homebrewGPTKRoot: nil).discover()
         let byKind = Dictionary(grouping: engines, by: \.kind)
 
         let crossOver = try XCTUnwrap(byKind[.crossOver]?.first)
@@ -64,7 +64,8 @@ final class EngineDiscoveryTests: XCTestCase {
 
         let gptk = try XCTUnwrap(byKind[.gamePortingToolkit]?.first)
         XCTAssertTrue(gptk.loaderPath.hasSuffix("/bin/wine64"))
-        XCTAssertTrue(gptk.supports(.d3dMetal))
+        XCTAssertTrue(gptk.supports(.d3dMetal) && gptk.supports(.msync) && gptk.supports(.esync))
+        XCTAssertFalse(wine.supports(.msync), "stock WineHQ builds have no MSync")
 
         let whiskyWine = try XCTUnwrap(byKind[.whisky]?.first)
         XCTAssertEqual(whiskyWine.version, "2.5.0")
@@ -83,14 +84,14 @@ final class EngineDiscoveryTests: XCTestCase {
         let tmp = try TemporaryDirectory()
         let apps = try tmp.directory("Applications")
         try makeCrossOver(tmp, at: "Applications/CrossOver.app", identifier: "com.example.notcodeweavers", version: "99")
-        XCTAssertTrue(EngineDiscovery(home: try tmp.directory("home"), applicationDirectories: [apps]).discover().isEmpty)
+        XCTAssertTrue(EngineDiscovery(home: try tmp.directory("home"), applicationDirectories: [apps], homebrewGPTKRoot: nil).discover().isEmpty)
     }
 
     func testOlderCrossOverStillOffersESync() throws {
         let tmp = try TemporaryDirectory()
         let apps = try tmp.directory("Applications")
         try makeCrossOver(tmp, at: "Applications/CrossOver.app", identifier: "com.codeweavers.CrossOver", version: "24.0.7")
-        let engine = try XCTUnwrap(EngineDiscovery(home: try tmp.directory("home"), applicationDirectories: [apps]).discover().first)
+        let engine = try XCTUnwrap(EngineDiscovery(home: try tmp.directory("home"), applicationDirectories: [apps], homebrewGPTKRoot: nil).discover().first)
         XCTAssertTrue(engine.supports(.esync))
         XCTAssertFalse(engine.supports(.dxmt), "DXMT arrived in CrossOver 25")
     }
@@ -98,11 +99,30 @@ final class EngineDiscoveryTests: XCTestCase {
     func testCrossOverBottleDirectoryHonorsPreference() throws {
         let tmp = try TemporaryDirectory()
         let home = try tmp.directory("home")
-        let discovery = EngineDiscovery(home: home, applicationDirectories: [])
+        let discovery = EngineDiscovery(home: home, applicationDirectories: [], homebrewGPTKRoot: nil)
         XCTAssertEqual(discovery.crossOverBottleDirectory().path,
                        home.appendingPathComponent("Library/Application Support/CrossOver/Bottles").path)
         try tmp.file("home/Library/Preferences/com.codeweavers.CrossOver.plist", data: plist(["BottleDir": "/Volumes/Games/Bottles"]))
         XCTAssertEqual(discovery.crossOverBottleDirectory().path, "/Volumes/Games/Bottles")
+    }
+
+    func testHomebrewGPTKIsFoundAtItsInjectedRoot() throws {
+        let tmp = try TemporaryDirectory()
+        let root = try tmp.directory("brew/game-porting-toolkit")
+        try tmp.file("brew/game-porting-toolkit/bin/wine64", data: x86Loader, executable: true)
+        let engines = EngineDiscovery(home: try tmp.directory("home"), applicationDirectories: [], homebrewGPTKRoot: root).discover()
+        XCTAssertEqual(engines.map(\.kind), [.gamePortingToolkit])
+    }
+
+    func testCustomEngineAcceptsAppBundles() throws {
+        let tmp = try TemporaryDirectory()
+        try tmp.file("Fake Wine.app/Contents/Resources/wine/bin/wine", data: x86Loader, executable: true)
+        let custom = try XCTUnwrap(EngineDiscovery.customEngine(at: tmp.url.appendingPathComponent("Fake Wine.app")))
+        XCTAssertTrue(custom.loaderPath.hasSuffix("Contents/Resources/wine/bin/wine"))
+        try makeCrossOver(tmp, at: "Elsewhere/CrossOver.app", identifier: "com.codeweavers.CrossOver", version: "26.3.0")
+        let crossOver = try XCTUnwrap(EngineDiscovery.customEngine(at: tmp.url.appendingPathComponent("Elsewhere/CrossOver.app")))
+        XCTAssertEqual(crossOver.kind, .crossOver)
+        XCTAssertNil(EngineDiscovery.customEngine(at: try tmp.directory("Empty.app")))
     }
 
     func testCustomEngineValidation() throws {

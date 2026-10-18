@@ -133,3 +133,33 @@ struct CrossOverBottleConfig: Equatable {
         value.replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\")
     }
 }
+
+extension BottleSettings {
+    /// The settings an existing CrossOver bottle already has, read from its
+    /// cxbottle.conf `[EnvironmentVariables]`, so linking a bottle shows (and
+    /// later preserves) what the user chose in CrossOver. Fields CrossOver does
+    /// not store keep their defaults.
+    init(crossOverConfig config: CrossOverBottleConfig) {
+        self.init()
+        func value(_ key: String) -> String? {
+            config.value(section: "EnvironmentVariables", key: key)?.trimmingCharacters(in: .whitespaces)
+        }
+        switch value("CX_GRAPHICS_BACKEND")?.lowercased() {
+        case "d3dmetal": graphics = .d3dMetal
+        case "dxmt": graphics = .dxmt
+        case "dxvk": graphics = .dxvk
+        case "wined3d": graphics = .wineD3D
+        default: graphics = .automatic // missing, empty or unknown means Auto
+        }
+        msync = value("WINEMSYNC") == "1"
+        esync = value("WINEESYNC") == "1"
+        metalHUD = value("MTL_HUD_ENABLED") == "1"
+        dlssMetalFX = value("D3DM_ENABLE_METALFX") == "1" || value("DXMT_ENABLE_NVEXT") == "1"
+        switch value("D3DM_SUPPORT_DXR") {
+        case "1": rayTracing = .on
+        case "0": rayTracing = .off
+        default: rayTracing = .automatic
+        }
+        advertiseAVX = value("ROSETTA_ADVERTISE_AVX") != "0"
+    }
+}

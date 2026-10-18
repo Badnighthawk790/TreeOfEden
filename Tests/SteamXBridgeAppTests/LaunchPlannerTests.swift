@@ -84,8 +84,9 @@ final class LaunchPlannerTests: XCTestCase {
         func command(_ path: String) throws -> [String] {
             try planner.windowsCommand(for: .program(URL(fileURLWithPath: path), arguments: [], workingDirectory: nil)).command
         }
-        XCTAssertEqual(try command("/x/setup.msi"), ["msiexec", "/i", "/x/setup.msi"])
-        XCTAssertEqual(try command("/x/run.bat"), ["cmd", "/c", "/x/run.bat"])
+        // Through Wine's shell, which converts the Unix path and picks msiexec/cmd itself.
+        XCTAssertEqual(try command("/x/setup.msi"), ["start", "/wait", "/unix", "/x/setup.msi"])
+        XCTAssertEqual(try command("/x/run.bat"), ["start", "/wait", "/unix", "/x/run.bat"])
         XCTAssertEqual(try command("/x/Game.lnk"), ["start", "/wait", "/unix", "/x/Game.lnk"])
         XCTAssertThrowsError(try command("/x/readme.txt"))
         XCTAssertEqual(try planner.invocation(for: .tool(.registryEditor)).arguments, ["regedit"])
@@ -193,6 +194,48 @@ final class LaunchPlannerTests: XCTestCase {
         XCTAssertTrue(Bottle(name: "Plain", prefixPath: try tmp.directory("plain").path).warnings(engine: older).isEmpty)
         XCTAssertEqual(Bottle.compareVersions("26.10", "26.9"), .orderedDescending)
         XCTAssertEqual(Bottle.compareVersions("26.3.0", "26.3"), .orderedSame)
+    }
+
+    func testCrossOverShellTargetsUseWindowsPathsAndInstallersWaitForChildren() throws {
+        let bottle = Bottle(name: "Steam", prefixPath: "/b/Steam", origin: .linked)
+        let planner = LaunchPlanner(bottle: bottle, engine: crossOverEngine(), gpu: m2,
+                                    crossOverBottleDirectory: URL(fileURLWithPath: "/b"), rosettaInstalled: true)
+        let lnk = URL(fileURLWithPath: "/b/Steam/drive_c/Games/Foo.lnk")
+        let inv = try planner.invocation(for: .program(lnk, arguments: [], workingDirectory: nil))
+        XCTAssertEqual(Array(inv.arguments.suffix(4)), ["--cx-app", "start.exe", "/wait", #"Z:\b\Steam\drive_c\Games\Foo.lnk"#],
+                       "no /unix: CrossOver converts native paths, so a Windows path is passed")
+        let setup = URL(fileURLWithPath: "/tmp/SteamSetup.exe")
+        let install = try planner.invocation(for: .program(setup, arguments: ["/S"], workingDirectory: nil), waitForChildren: true)
+        XCTAssertEqual(Array(install.arguments.prefix(3)), ["--bottle", "Steam", "--wait-children"])
+        XCTAssertFalse(try planner.invocation(for: .program(setup, arguments: [], workingDirectory: nil)).arguments.contains("--wait-children"))
+    }
+
+    func testCustomDLLOverridesAreMergedNotReplaced() {
+        var bottle = Bottle(name: "B", prefixPath: "/p")
+        bottle.settings.graphics = .dxvk
+        bottle.settings.environment = [EnvironmentVariable(name: "WINEDLLOVERRIDES", value: "xinput1_3=n,b")]
+        let env = LaunchPlanner(bottle: bottle, engine: plainEngine(), gpu: m2, rosettaInstalled: true).plainEnvironment()
+        XCTAssertEqual(env["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;dxgi,d3d9,d3d10core,d3d11=n,b;xinput1_3=n,b")
+    }
+
+    func testESyncIsWrittenOnlyForCrossOverVersionsThatHaveIt() {
+        var bottle = Bottle(name: "B", prefixPath: "/b/B")
+        bottle.settings.msync = false
+        bottle.settings.esync = true
+        let old = WineEngine(kind: .crossOver, name: "CrossOver 25.1", version: "25.1", loaderPath: "/x/wine", wineserverPath: nil,
+                             bundlePath: nil, dxvkSourcePath: nil, architectures: [], features: [.d3dMetal, .msync, .esync])
+        func keys(_ engine: WineEngine) -> [String: String?] {
+            Dictionary(LaunchPlanner(bottle: bottle, engine: engine, gpu: m2, rosettaInstalled: true)
+                .crossOverConfigChanges().map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a })
+        }
+        XCTAssertEqual(keys(old)["WINEESYNC"], .some("1"))
+        XCTAssertFalse(keys(crossOverEngine()).keys.contains("WINEESYNC"), "CrossOver 26 has no ESync; the key is never touched")
+    }
+
+    func testCrossOverOutsideLibraryMessageGivesAPossibleFix() {
+        let message = LaunchPlanError.crossOverBottleOutsideLibrary("/B").errorDescription ?? ""
+        XCTAssertTrue(message.contains("Move this bottle into that folder"))
+        XCTAssertFalse(message.contains("different engine"))
     }
 
     func testHighResolutionRegistryCommands() {

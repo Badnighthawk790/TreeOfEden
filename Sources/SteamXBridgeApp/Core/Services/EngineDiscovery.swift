@@ -5,13 +5,18 @@ import Foundation
 struct EngineDiscovery {
     let home: URL
     let applicationDirectories: [URL]
+    /// Where Apple's Homebrew formula installs the Game Porting Toolkit (an Intel
+    /// Homebrew under /usr/local); nil skips it (tests).
+    let homebrewGPTKRoot: URL?
 
-    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, applicationDirectories: [URL]? = nil) {
+    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, applicationDirectories: [URL]? = nil,
+         homebrewGPTKRoot: URL? = URL(fileURLWithPath: "/usr/local/opt/game-porting-toolkit", isDirectory: true)) {
         self.home = home
         self.applicationDirectories = applicationDirectories ?? [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             home.appendingPathComponent("Applications", isDirectory: true),
         ]
+        self.homebrewGPTKRoot = homebrewGPTKRoot
     }
 
     func discover() -> [WineEngine] {
@@ -87,6 +92,10 @@ struct EngineDiscovery {
             guard let loader = preferredLoader(in: bin) else { continue }
             let version = Self.infoPlist(of: app)["CFBundleShortVersionString"] as? String
             let title = String(appName.dropLast(4)) // "Wine Stable"
+            var features: [EngineFeature] = hasD3DMetal(engineRoot: bin.deletingLastPathComponent()) ? [.d3dMetal] : []
+            // Gcenx's "Wine Crossover" is built from CrossOver's sources, which carry
+            // MSync and ESync; stock WineHQ builds have neither.
+            if appName == "Wine Crossover.app" { features += [.msync, .esync] }
             result.append(WineEngine(
                 kind: .wineHQ,
                 name: [title, version].compactMap { $0 }.joined(separator: " "),
@@ -96,7 +105,7 @@ struct EngineDiscovery {
                 bundlePath: app.path,
                 dxvkSourcePath: nil,
                 architectures: architectures(of: loader),
-                features: hasD3DMetal(engineRoot: bin.deletingLastPathComponent()) ? [.d3dMetal] : []
+                features: features
             ))
         }
         return result
@@ -116,7 +125,7 @@ struct EngineDiscovery {
 
     /// Apple's Homebrew formula, built into an Intel Homebrew under /usr/local.
     func gptkHomebrew() -> WineEngine? {
-        let root = URL(fileURLWithPath: "/usr/local/opt/game-porting-toolkit", isDirectory: true)
+        guard let root = homebrewGPTKRoot else { return nil }
         let bin = root.appendingPathComponent("bin", isDirectory: true)
         guard let loader = preferredLoader(in: bin) else { return nil }
         return gptkEngine(loader: loader, bin: bin, root: root, version: nil, bundle: nil)
@@ -132,7 +141,7 @@ struct EngineDiscovery {
             bundlePath: bundle?.path,
             dxvkSourcePath: nil,
             architectures: architectures(of: loader),
-            features: (hasD3DMetal(engineRoot: root) ? [.d3dMetal] : []) + [.esync]
+            features: (hasD3DMetal(engineRoot: root) ? [.d3dMetal] : []) + [.msync, .esync]
         )
     }
 
@@ -210,7 +219,17 @@ struct EngineDiscovery {
 
     /// Describes a wine binary the user picked. Returns nil when it is not a
     /// Wine loader or CrossOver wrapper.
-    static func customEngine(at loader: URL) -> WineEngine? {
+    static func customEngine(at chosen: URL) -> WineEngine? {
+        var loader = chosen
+        // An app bundle was picked: look for the engine inside it.
+        if chosen.pathExtension == "app" {
+            let candidates = ["Contents/SharedSupport/CrossOver/bin/wine", "Contents/Resources/wine/bin/wine",
+                              "Contents/Resources/wine/bin/wine64", "Contents/SharedSupport/wine/bin/wine",
+                              "Contents/SharedSupport/wine/bin/wine64"]
+            guard let inside = candidates.map({ chosen.appendingPathComponent($0) })
+                .first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else { return nil }
+            loader = inside
+        }
         let name = loader.lastPathComponent
         guard ["wine", "wine64"].contains(name), FileManager.default.isExecutableFile(atPath: loader.path) else { return nil }
         let bin = loader.deletingLastPathComponent()
@@ -227,7 +246,7 @@ struct EngineDiscovery {
             architectures: discovery.architectures(of: loader),
             features: isCrossOverWrapper
                 ? [.d3dMetal, .dxmt, .dxvk, .wineD3D, .msync, .dlssMetalFX]
-                : (discovery.hasD3DMetal(engineRoot: bin.deletingLastPathComponent()) ? [.d3dMetal, .esync] : [])
+                : (discovery.hasD3DMetal(engineRoot: bin.deletingLastPathComponent()) ? [.d3dMetal, .msync, .esync] : [])
         )
     }
 

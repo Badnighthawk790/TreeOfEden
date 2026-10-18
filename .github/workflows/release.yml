@@ -53,6 +53,12 @@ jobs:
             echo "::error::Version must look like 2.0.0 (got '$VERSION')"
             exit 1
           fi
+          # A manual run must not reuse an existing tag: the release would then
+          # point at that tag's commit while carrying a build of another one.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag v$VERSION already exists; choose a new version, or push that tag to release its commit"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
