@@ -245,7 +245,7 @@ struct ProgramsView: View {
 
     private func run(_ program: InstalledProgram) {
         if let target = program.target {
-            let arguments = program.arguments.map { $0.split(separator: " ").map(String.init) } ?? []
+            let arguments = program.arguments.map(WindowsCommandLine.split) ?? []
             model.launch(.program(target, arguments: arguments, workingDirectory: program.workingDirectory), in: bottle)
         } else {
             model.launch(.program(program.shortcut, arguments: [], workingDirectory: nil), in: bottle)

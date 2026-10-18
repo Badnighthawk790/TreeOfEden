@@ -198,8 +198,8 @@ final class AppModel: ObservableObject {
                                                       settings: BottleSettings(), existing: existing)
                 : try await ops.createPlainBottle(named: name, engine: engine, windowsVersion: windowsVersion,
                                                   settings: BottleSettings())
-            await self.insert(bottle)
-            if installSteam { await self.installSteam(in: bottle.id) }
+            self.insert(bottle)
+            if installSteam { self.installSteam(in: bottle.id) }
         }
     }
 
@@ -284,7 +284,7 @@ final class AppModel: ObservableObject {
                     try store.duplicate(bottle, named: "\(bottle.name) copy")
                 }.value
             }
-            await self.insert(copy)
+            self.insert(copy)
         }
     }
 
@@ -404,9 +404,9 @@ final class AppModel: ObservableObject {
         let ops = operations
         perform("Installing Steam", on: bottleID) {
             let steam = try await ops.installSteam(in: bottle, engine: engine)
-            await self.refreshContents(bottleID)
+            self.refreshContents(bottleID)
             // Steam updates itself on its first run, as CrossOver's Steam install does.
-            await self.launch(.steamClient(steam), in: bottle)
+            self.launch(.steamClient(steam), in: bottle)
         }
     }
 

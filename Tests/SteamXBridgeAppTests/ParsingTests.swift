@@ -152,3 +152,16 @@ final class GPUStackTests: XCTestCase {
         XCTAssertTrue(unknown.featureStatuses.allSatisfy { !$0.isAvailable })
     }
 }
+
+final class WindowsCommandLineTests: XCTestCase {
+    func testSplitsLikeCommandLineToArgvW() {
+        XCTAssertEqual(WindowsCommandLine.split("-windowed  -dx11"), ["-windowed", "-dx11"])
+        XCTAssertEqual(WindowsCommandLine.split(#"-config "C:\My Games\cfg.ini" -x"#), ["-config", #"C:\My Games\cfg.ini"#, "-x"])
+        XCTAssertEqual(WindowsCommandLine.split(#"a\\"b c" d"#), [#"a\b c"#, "d"], "2n backslashes + quote -> n backslashes, quote toggles")
+        XCTAssertEqual(WindowsCommandLine.split(#"a\\\"b"#), [#"a\"b"#], "2n+1 backslashes + quote -> n backslashes + literal quote")
+        XCTAssertEqual(WindowsCommandLine.split(#""say ""hi"" now""#), [#"say "hi" now"#])
+        XCTAssertEqual(WindowsCommandLine.split(#"C:\path\to\"#), [#"C:\path\to\"#], "trailing backslashes stay literal")
+        XCTAssertEqual(WindowsCommandLine.split(#""""#), [""], "an empty quoted argument is kept")
+        XCTAssertEqual(WindowsCommandLine.split("   "), [])
+    }
+}
