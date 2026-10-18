@@ -7,8 +7,18 @@ MIN_MACOS="14.0"
 CONFIGURATION="release"
 # Overridable by the release workflow (e.g. from a git tag). Defaults keep local
 # packaging working with no arguments.
-APP_VERSION="${APP_VERSION:-1.0.0}"
+APP_VERSION="${APP_VERSION:-2.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
+
+# Both end up in Info.plist; refuse anything that is not a plain version.
+if [[ ! "${APP_VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "APP_VERSION must look like 2.0.0 (got '${APP_VERSION}')." >&2
+  exit 1
+fi
+if [[ ! "${BUILD_NUMBER}" =~ ^[0-9]+$ ]]; then
+  echo "BUILD_NUMBER must be a whole number (got '${BUILD_NUMBER}')." >&2
+  exit 1
+fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 APP_DIR="${DIST_DIR}/${APP_NAME}.app"
@@ -67,13 +77,21 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>${MIN_MACOS}</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>CFBundleDisplayName</key>
+  <string>Steam X Bridge</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.games</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>SteamXBridge drives Wine engines you install separately; it bundles none.</string>
 </dict>
 </plist>
 PLIST
 
-if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "${APP_DIR}" || true
-fi
+# Ad-hoc signature: required for arm64 code to run at all. It is not a
+# Developer ID signature, so a downloaded copy still needs Gatekeeper's
+# "Open Anyway" step (see README). Signing failures are fatal.
+codesign --force --sign - --timestamp=none "${APP_DIR}"
+codesign --verify --strict --verbose=2 "${APP_DIR}"
 
 rm -f "${ZIP_PATH}"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${APP_DIR}" "${ZIP_PATH}"

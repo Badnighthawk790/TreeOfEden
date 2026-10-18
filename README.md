@@ -1,146 +1,90 @@
 # SteamXBridge
 
-SteamXBridge is a lightweight macOS app for Apple Silicon Macs that configures and launches x86 Steam games through a translation layer (Apple's Game Porting Toolkit, CrossOver, or Whisky), with the performance and compatibility toggles that matter on an M2 MacBook Air collected in one place.
-
-> **Reality check.** SteamXBridge does **not** itself translate Windows games — that job belongs to mature stacks like Apple's Game Porting Toolkit (Wine + D3DMetal + Rosetta 2). This app is the orchestrator on top of them: it picks the right backend, sets correct environment variables, warns you about games that can't run, and tunes settings for a fanless chip. No tool can make **every** game run, and some popular games **cannot run at all** (see below).
-
-## Can it run Helldivers 2?
-
-**No — and you should not try.** Helldivers 2 uses **nProtect GameGuard**, a kernel-level anti-cheat that does not execute under Wine or the Game Porting Toolkit. It will fail to launch, and attempting to bypass anti-cheat risks a **permanent account ban**. The same applies to other kernel anti-cheat titles such as Destiny 2 (BattlEye) and Apex Legends (EAC). SteamXBridge detects these by Steam App ID or name and shows a clear warning **before** you launch.
-
-What *does* work well are single-player and anti-cheat-free titles. Expect a steady 60 FPS on lighter games, and roughly 30–45 FPS at low settings with upscaling on GPU-heavy AAA games.
+SteamXBridge is a CrossOver-style bottle manager for Apple Silicon Macs. It runs Windows games and apps, Steam above all, in **bottles**: self-contained Windows environments (Wine prefixes). It drives Wine engines you install yourself (CrossOver, Apple's Game Porting Toolkit, WhiskyWine, WineHQ builds) and never bundles or modifies them.
 
 ## What it does
 
-- **Scans your installed Steam library** (`libraryfolders.vdf` + `appmanifest_*.acf`, including external drives) and creates a tuned profile in one click, guessing the game's `.exe`.
-- Saves per-game launch profiles as JSON.
-- Lets you choose the **translation backend**: Apple Game Porting Toolkit (D3DMetal) or Wine + DXVK (MoltenVK).
-- Emits only the environment variables that apply to the chosen backend (msync, DXVK, MoltenVK, Rosetta AVX, Metal HUD, Wine FSR, …).
-- **Pre-flight compatibility check** that flags anti-cheat games that cannot run.
-- **M2 Air performance presets** (Battery Saver / Balanced 60 / Max Quality) plus upscaling and render-scale controls.
-- Generates a launch script and starts the game through `arch -x86_64` and your selected Wine binary.
+- **Bottles.** Create, add, duplicate and remove bottles. New bottles are created with the engine of your choice. With CrossOver, they are made by CrossOver's own `cxbottle` tool, so CrossOver can open them too.
+- **Bring what you already have.** Existing CrossOver bottles, Whisky bottles (original and community fork), Sikarugir wrappers and plain Wine/GPTK prefixes are found automatically. Adding one never moves or changes its files.
+- **Steam in a bottle.** One click downloads the official Windows Steam installer and installs it into the bottle. Installed games are read from every Steam library, including libraries on other drives (`D:\SteamLibrary` is mapped through the bottle's drive letters). They launch through the Windows Steam client (`steam.exe -applaunch`), so Steam DRM and Steamworks work.
+- **Programs.** Start Menu shortcuts are listed the way CrossOver lists launchers. You can also pin any `.exe`, or run any `.exe`, `.msi`, `.bat` or `.lnk` with **Run Command**.
+- **Bottle settings**, matching CrossOver 26's Advanced Settings:
+  - **Graphics renderer:** Automatic, D3DMetal, DXMT, DXVK or WineD3D. The choices depend on what the engine supports.
+  - **Graphics options:** DLSS powered by MetalFX, DirectX ray tracing (only on chips with hardware ray tracing, M3 and newer), Metal Performance HUD, and High Resolution Mode.
+  - **Performance:** MSync/ESync, and advertising AVX to programs.
+  - **Other:** Windows version, custom environment variables, and detailed Wine logging.
+  - CrossOver bottles store these settings in `cxbottle.conf`, as CrossOver itself does. Other engines receive them as launch-time variables.
+- **Tools.** Wine Configuration, Control Panel, Game Controllers, Internet Settings, Task Manager, Registry Editor, Command Prompt and File Explorer, plus Open C: Drive, Simulate Reboot and Force Quit.
+- **Logs.** Every run is logged with its command, environment and exit status, so a game that "does nothing" leaves a trace.
+- **Compatibility notes.** Known titles carry a verdict and one-click recommended settings, for example HELLDIVERS 2 (below). A known App ID is authoritative, so similarly named games never inherit another game's verdict.
 
-## Translation backends
+## Engines
 
-| Backend | How it works | Best for |
+| Engine | How to get it | Notes |
 | --- | --- | --- |
-| **Game Porting Toolkit (D3DMetal)** *(default)* | Wine + Direct3D 11/12 → Metal, x86 via Rosetta 2 | Most modern D3D11/12 games on Apple Silicon |
-| **Wine + DXVK (MoltenVK)** | Direct3D → Vulkan → Metal | Older or Vulkan-native titles, fallback cases |
+| **CrossOver 26** (CodeWeavers) | [codeweavers.com](https://www.codeweavers.com/crossover), paid, with a free trial | Most compatible. Bottles are run through CrossOver's own launcher, so its fixes apply. The only engine that runs HELLDIVERS 2. |
+| **Game Porting Toolkit** (Apple D3DMetal) | `brew install --cask gcenx/wine/game-porting-toolkit` | Direct3D 11/12 through D3DMetal. |
+| **WhiskyWine** | Installed by Whisky or the community fork (frankea/Whisky) | D3DMetal and DXVK; Whisky itself is archived. |
+| **Wine Stable / Devel / Staging** | [Gcenx macOS builds](https://github.com/Gcenx/macOS_Wine_builds) (the Homebrew casks were disabled in September 2026) | Upstream Wine; no D3DMetal or MSync. Steam's window can render black here (an open Wine bug). |
+| **Sikarugir** wrappers | Sikarugir-App/Sikarugir | Each wrapper's built-in engine is usable for its own prefix. |
+| **Custom** | Settings > Add Engine… | Any `wine` / `wine64` binary. |
 
-## Chip-aware GPU optimizations (M1 → M4)
+Every shipping engine except CrossOver's ARM64 Preview is x86_64 and needs **Rosetta 2** (`softwareupdate --install-rosetta --agree-to-license`). SteamXBridge never forces `arch -x86_64`: macOS runs x86_64 engines under Rosetta automatically, and native ARM64 engines natively.
 
-SteamXBridge detects the host chip (M1/M2/M3/M4) and shows how each M4-era GPU feature maps onto your machine.
+## Can it run HELLDIVERS 2?
 
-> **Honesty first:** M3/M4 gains like **Dynamic Caching**, **hardware ray tracing**, and **hardware mesh shading** are physical silicon. Software cannot emulate them into existence on an M1/M2 — emulating hardware in software is slower, not faster. What software *can* do is enable the levers that narrow the gap, and disable features that would fall onto a catastrophic non-hardware path.
+**Yes, with CrossOver 26 or later.** CodeWeavers added it in CrossOver 26 (February 2026) and rates it *Runs Well* on 26.3, including online play. HELLDIVERS 2's anti-cheat (nProtect GameGuard) works only with CodeWeavers' own patches. It does not get past GameGuard in Whisky, the Game Porting Toolkit or plain Wine. CodeWeavers calls the anti-cheat working "a happy accident", and game patches have broken it before (CrossOver 26.2 shipped a fix), so it can break again.
 
-With **chip-aware draw-call optimizations** on (default), the app enables the closest software stand-ins:
+Setup:
+1. Create a bottle with the CrossOver engine and let SteamXBridge install Steam.
+2. Install HELLDIVERS 2 from Steam.
+3. Open its compatibility notes (the ⓘ button) and click **Apply Recommended Settings**: D3DMetal, AVX advertised, MSync off.
+4. Click **Play**.
 
-| M4 hardware feature | On M1/M2, SteamXBridge does |
-| --- | --- |
-| Dynamic Caching | Metal **argument buffers** + **heap-backed allocations** (`MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS`, `MVK_CONFIG_USE_MTLHEAP`) to cut per-draw-call binding and memory overhead |
-| Faster command processing | **Immediate command-buffer encoding** (`MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS`) to overlap CPU and GPU work |
-| Bigger shader throughput | **Parallel pipeline compilation** across all CPU cores (`MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION`); Metal debug/validation layers forced off |
-| Ray-tracing cores | **DXR translation forced off** (`D3DM_SUPPORT_DXR=0`) — on M1/M2 the software fallback collapses the frame rate. On M3/M4 a toggle enables it. |
-| Higher effective resolution | **MetalFX temporal upscaling / FSR** — render at ~60–77% and upscale; the main software lever for M4-class output from a smaller GPU |
+**Expectations on an M2 MacBook Air:** about 20–35 fps at low settings around 720p–1080p, with stutter in heavy fights. That figure is an estimate from base M3/M4 MacBook Air reports (30–40 fps); there are no direct M2 measurements. 16 GB of memory is recommended.
 
-The MoltenVK (`MVK_*`) levers apply to the Wine + DXVK backend; the Metal and DXR levers apply to the Game Porting Toolkit backend.
+## Apple Silicon GPU features
 
-## Upscaling
+SteamXBridge reads your chip (M1 through M5 and later) and shows which GPU features it really has. Dynamic Caching, hardware ray tracing and hardware mesh shading arrived with M3. They are silicon, and software cannot add them to an M1/M2, so ray tracing stays off there instead of falling back to slow emulation. The practical lever on any Apple Silicon Mac is upscaling: enable **DLSS powered by MetalFX** (CrossOver 26, macOS 26) and pick DLSS in the game, or use the game's own FSR/XeSS.
 
-- **MetalFX** — enabled via the D3DMetal backend; set it in your runtime's settings and pick a render scale below 100%.
-- **AMD FSR** — uses Wine's fullscreen FSR (`WINE_FULLSCREEN_FSR`); works on either backend. Strength is derived from your render-scale slider.
-- In-game upscalers (FSR/DLSS menus) always take priority when a game ships them.
+## Install
 
-## Build and run (development)
+1. Download `SteamXBridge-macOS.zip` from a release (or from a CI run's artifacts), unzip it, and move **SteamXBridge.app** to /Applications.
+2. The app is ad-hoc signed, not notarized, so macOS blocks the first launch. Since macOS 15, Control-click > Open no longer bypasses this. Instead:
+   - Open the app once and dismiss the warning.
+   - Go to **System Settings > Privacy & Security**, scroll to Security and click **Open Anyway**, then confirm.
+   - Alternatively, run `xattr -dr com.apple.quarantine /Applications/SteamXBridge.app` in Terminal.
 
-Requires **macOS 14+** with the Swift toolchain (Xcode or Command Line Tools). The app uses SwiftUI/AppKit and cannot be built on Linux.
+## Build from source
 
-```bash
-swift build
-swift run
-```
-
-## Build an installable macOS app bundle
-
-From macOS, run:
-
-```bash
-./scripts/package_macos_app.sh
-```
-
-This creates:
-
-- `dist/SteamXBridge.app` (double-clickable app bundle)
-- `dist/SteamXBridge-macOS.zip` (shareable installer archive)
-
-Then install by dragging `SteamXBridge.app` into `/Applications`.
-
-## Run and build for release
-
-All commands require **macOS 14+** with the Swift toolchain (Xcode or Command Line Tools); the SwiftUI/AppKit app cannot be built on Linux.
-
-**Run locally (development):**
+Requires macOS 14 or later on Apple Silicon, with Xcode or the Command Line Tools.
 
 ```bash
 swift run                 # launch the app
-swift test                # run the unit tests
-```
-
-**Compile a release binary:**
-
-```bash
+swift test                # run the test suite
 swift build -c release    # optimized build in .build/release/
+APP_VERSION=2.0.0 BUILD_NUMBER=1 ./scripts/package_macos_app.sh   # dist/SteamXBridge.app + .zip
 ```
 
-**Package a release `.app` you can ship:**
+The core logic (bottles, engines, Steam libraries, launch planning, the process runner) is platform-neutral, and its test suite also runs on Linux (`swift test`). The SwiftUI app itself builds only on macOS.
 
-```bash
-# Optional: stamp a version into the bundle (defaults to 1.0.0 / build 1)
-APP_VERSION=1.2.3 BUILD_NUMBER=42 ./scripts/package_macos_app.sh
-```
+## Releases
 
-This produces `dist/SteamXBridge.app` (ad-hoc signed) and `dist/SteamXBridge-macOS.zip`.
+- **Build macOS app** runs on every push. It tests and packages the app on an Apple Silicon runner and uploads `SteamXBridge-macOS` as a run artifact.
+- **Release macOS app**:
+  - Run it manually from the Actions tab with a version, and it builds a **draft** release to review. Nothing is public until you click Publish.
+  - Push a tag like `v2.0.0`, and it publishes directly.
+  - Either way, the release is built from and tagged at the exact commit tested.
 
-**Cut a release through the release channel (recommended):**
+## Where things live
 
-Push a version tag and CI builds, packages, and publishes a downloadable GitHub Release automatically:
+| Path | Contents |
+| --- | --- |
+| `~/Library/Application Support/SteamXBridge/Bottles/<id>.json` | Bottle metadata |
+| `~/Library/Application Support/SteamXBridge/Prefixes/` | Prefixes of bottles SteamXBridge created |
+| `~/Library/Application Support/SteamXBridge/Logs/<bottle id>/` | Run logs |
+| `~/Library/Application Support/CrossOver/Bottles/` | CrossOver's bottles (left where they are) |
 
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
+## Using CrossOver with SteamXBridge
 
-The [`Release macOS app`](.github/workflows/release.yml) workflow runs on Apple Silicon runners, stamps the tag version into the bundle, and attaches `SteamXBridge-macOS.zip` to the release. You can also trigger it manually from the **Actions** tab (*Run workflow* → enter a version). Every push to the branch is also built by [`Build macOS app`](.github/workflows/build-macos.yml), which uploads the packaged app as a run artifact.
-
-> First launch: the app is ad-hoc signed (not notarized), so Gatekeeper blocks a downloaded copy. Right-click → **Open**, or run `xattr -dr com.apple.quarantine SteamXBridge.app`.
-
-## Typical setup on an M2 MacBook Air
-
-1. Install Steam for macOS.
-2. Install a runtime: Apple's Game Porting Toolkit, **CrossOver**, or **Whisky**.
-3. In SteamXBridge, click **Scan** under *Steam library*, pick a game, and **Create profile** — it fills in the name, App ID, and a best-guess `.exe`.
-4. Set the **Runtime binary** (path to `wine64` from your runtime) and confirm the **Backend** (Game Porting Toolkit for most modern games).
-5. Click the **Balanced 60** preset, then tune the render scale and upscaler.
-6. Keep macOS Low Power Mode **off** while gaming, and prefer a 60 FPS cap to keep the fanless Air from throttling.
-
-## Profile JSON schema (example)
-
-```json
-{
-  "id": "A8F9E2C8-6D07-467C-863F-98D64A37CB33",
-  "name": "My Game",
-  "steamAppID": "123456",
-  "gameExecutablePath": "/Users/me/Games/MyGame/Game.exe",
-  "winePrefixPath": "",
-  "backend": "gptkD3DMetal",
-  "upscaler": "metalFX",
-  "resolutionScalePercent": 77,
-  "syncPrimitive": "msync",
-  "useAsyncShaders": true,
-  "frameLimit": 60,
-  "showFPSOverlay": false,
-  "useChipOptimizations": true,
-  "allowRayTracing": false,
-  "customEnv": "MTL_HUD_ENABLED=1"
-}
-```
+SteamXBridge launches *your* installed and licensed copy of CrossOver through its documented command-line wrapper, the same way the Heroic launcher does. It does not copy, bundle or patch CrossOver or Apple's D3DMetal. CrossOver remains a separate CodeWeavers product with its own license.

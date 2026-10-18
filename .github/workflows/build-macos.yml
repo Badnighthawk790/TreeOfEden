@@ -1,26 +1,33 @@
 name: Build macOS app
 
-# Builds and packages SteamXBridge.app on Apple Silicon macOS runners, since the
-# SwiftUI/AppKit app cannot be cross-compiled off macOS. The packaged app is
-# uploaded as a downloadable artifact on every push.
+# Builds, tests and packages SteamXBridge.app on Apple Silicon for every push.
+# The SwiftUI app can only be compiled on macOS; the packaged app is uploaded
+# as a downloadable artifact. (Same-repo pull requests are covered by the push
+# to their branch, so there is no separate pull_request trigger to run twice.)
 
 on:
   push:
-    branches:
-      - "claude/sweet-ptolemy-pp2mp5"
-      - "main"
-  pull_request:
+    branches: ["**"]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: macos-14 # Apple Silicon (arm64), same architecture as the M2 MacBook Air
+    runs-on: macos-26 # Apple Silicon; macos-14 is retired on 2026-11-02
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Show Swift version
-        run: swift --version
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swift --version
 
       - name: Run tests
         run: swift test
@@ -29,7 +36,7 @@ jobs:
         run: ./scripts/package_macos_app.sh
 
       - name: Upload app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SteamXBridge-macOS
           path: dist/SteamXBridge-macOS.zip

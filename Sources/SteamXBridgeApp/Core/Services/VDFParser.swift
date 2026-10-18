@@ -6,9 +6,14 @@ indirect enum VDFNode: Equatable {
     case string(String)
     case object([String: VDFNode])
 
+    /// Looks up a child by key. Valve's KeyValues keys are case-insensitive
+    /// (older Steam writes "LibraryFolders", newer writes "libraryfolders"),
+    /// so an exact match is preferred and a case-insensitive one is the fallback.
     subscript(key: String) -> VDFNode? {
-        if case let .object(dict) = self { return dict[key] }
-        return nil
+        guard case let .object(dict) = self else { return nil }
+        if let exact = dict[key] { return exact }
+        let lowered = key.lowercased()
+        return dict.first(where: { $0.key.lowercased() == lowered })?.value
     }
 
     var stringValue: String? {
@@ -79,6 +84,11 @@ struct VDFParser {
             if ch.isWhitespace || ch == "{" || ch == "}" || ch == "\"" { break }
             token.append(ch)
             index += 1
+        }
+        // Platform conditionals such as [$WIN32] or [!$X360] trail a value; they
+        // are not keys, so skip them rather than shifting every pair after them.
+        if token.hasPrefix("["), token.hasSuffix("]") {
+            return readToken()
         }
         return .value(token)
     }
