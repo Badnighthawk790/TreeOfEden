@@ -15,7 +15,7 @@ SteamXBridge is rebuilt around **bottles**: self-contained Windows environments 
 - **Tools.** Wine Configuration, Control Panel, Game Controllers, Internet Settings, Task Manager, Registry Editor, Command Prompt, Simulate Reboot, Force Quit and Open C: Drive.
 - **Run logs** with exit status for every launch.
 - **Engine detection.** CrossOver 26 (and the ARM64 Preview), the Game Porting Toolkit, WhiskyWine, WineHQ builds, Sikarugir and custom engines.
-- **HELLDIVERS 2.** It runs with CrossOver 26 or later; the app offers one-click recommended settings and warns when a bottle's engine cannot run it.
+- **HELLDIVERS 2.** It runs with CrossOver 26 or later (26.2 or later recommended); the app offers one-click recommended settings and warns when a bottle's engine cannot run it.
 
 ### Fixed
 - Arguments and environment variables are now passed straight to the engine, with no generated shell script, so a value can no longer inject commands.

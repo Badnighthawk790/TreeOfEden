@@ -58,7 +58,7 @@ struct AppCommands: Commands {
         CommandMenu("Bottle") {
             Button("Run Command…") { model.runCommandBottleID = model.selection }
                 .keyboardShortcut("r")
-                .disabled(model.selectedBottle == nil)
+                .disabled(model.selectedBottle == nil || selectedBusy)
             Button("Install Steam") {
                 if let id = model.selection { model.installSteam(in: id) }
             }

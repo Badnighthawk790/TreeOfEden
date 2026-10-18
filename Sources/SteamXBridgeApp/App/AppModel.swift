@@ -340,66 +340,103 @@ final class AppModel: ObservableObject {
 
     /// Saves edited settings and applies them. Changes that need the bottle's
     /// wineserver stopped (CrossOver's cxbottle.conf, sync mode, engine) ask
-    /// first when programs are running in it.
+    /// first when programs are running in it. Edits that are not applied, for
+    /// whatever reason, stay in the Settings draft.
     func save(_ updated: Bottle) {
-        guard let old = bottle(updated.id) else { return }
-        if activity[updated.id] != nil {
-            alert = AppAlert(title: "Settings can wait", message: "\(activity[updated.id] ?? "An operation") is still running in this bottle.")
-            return
-        }
+        guard let old = bottle(updated.id), !deferIfBusy(updated) else { return }
         let settingsChanged = old.settings != updated.settings || old.windowsVersion != updated.windowsVersion
             || old.engineID != updated.engineID
         guard settingsChanged else {
-            persist(updated) // a rename: nothing to apply
-            clearDraft(ifMatching: updated)
+            if persist(updated) { clearDraft(ifMatching: updated) } // a rename: nothing to apply
             return
         }
         let running = runs(for: updated.id).contains(where: \.isRunning)
         let needsStop = updated.isCrossOverBottle || old.settings.msync != updated.settings.msync
             || old.settings.esync != updated.settings.esync || old.engineID != updated.engineID
         if running, needsStop {
+            keepUnapplied(updated)
             pendingApply = PendingApply(old: old, updated: updated)
             return
         }
         apply(old: old, updated: updated, quitFirst: false)
     }
 
-    func confirmPendingApply(quitFirst: Bool) {
-        guard let pending = pendingApply else { return }
+    /// "Quit Programs and Apply": takes the alert's own value, since SwiftUI
+    /// clears `pendingApply` when the alert closes.
+    func confirmPendingApply(_ pending: PendingApply) {
         pendingApply = nil
-        apply(old: pending.old, updated: pending.updated, quitFirst: quitFirst)
+        // Apply onto the bottle as it is now, keeping anything changed while the
+        // question was open (a pin).
+        guard let current = bottle(pending.updated.id) else { return }
+        apply(old: current, updated: Self.withSettings(of: pending.updated, on: current), quitFirst: true)
     }
 
     private func apply(old: Bottle, updated: Bottle, quitFirst: Bool) {
+        guard !deferIfBusy(updated) else { return }
         guard let engine = self.engine(for: updated) else {
-            persist(updated)
-            clearDraft(ifMatching: updated)
-            alert = AppAlert(title: "Settings saved",
-                             message: "They will be applied when a compatible engine is installed.")
+            // Nothing would apply them later, so they are not saved as applied.
+            keepUnapplied(updated)
+            alert = AppAlert(title: "No engine to apply these settings",
+                             message: (updated.isCrossOverBottle ? "Install CrossOver" : "Install a Wine engine")
+                                + " to apply them. Your changes stay in the Settings tab until then.")
             return
         }
-        let ops = operations
-        persist(updated)
+        guard persist(updated) else { keepUnapplied(updated); return }
         clearDraft(ifMatching: updated)
         if quitFirst { markStopRequested(updated.id) }
+        let ops = operations
+        // Cannot be refused: the bottle was checked idle above, synchronously.
         perform("Applying settings", on: updated.id) {
             do {
                 if quitFirst { try await ops.forceQuit(updated, engine: engine) }
                 try await ops.applySettings(from: old, to: updated, engine: engine)
             } catch {
-                // Roll back so the change shows as unapplied and Apply can retry it.
-                if self.bottle(updated.id) == updated {
-                    self.persist(old)
-                    self.settingsDrafts[updated.id] = updated
-                }
+                self.rollBack(updated, to: old)
                 throw error
             }
         }
     }
 
+    /// Refuses to change settings while an operation runs in the bottle; the
+    /// edits stay in the Settings draft.
+    private func deferIfBusy(_ updated: Bottle) -> Bool {
+        guard let current = activity[updated.id] else { return false }
+        keepUnapplied(updated)
+        alert = AppAlert(title: "Settings can wait",
+                         message: "\(current) is still running in this bottle. Your changes stay in the Settings tab until you apply them.")
+        return true
+    }
+
+    /// Records a failed apply as unapplied, so Apply can retry it. Only the
+    /// settings go back (the name and pins are kept), and only if nothing else
+    /// changed them meanwhile. applySettings has already restored cxbottle.conf.
+    private func rollBack(_ updated: Bottle, to old: Bottle) {
+        guard let current = bottle(updated.id), Self.sameSettings(current, updated) else { return }
+        var restored = Self.withSettings(of: old, on: current)
+        restored.name = current.name
+        persist(restored)
+        keepUnapplied(updated)
+    }
+
+    /// Keeps edits that were not applied in the Settings draft. A draft that is
+    /// already open holds them (and possibly more), so it is left alone.
+    private func keepUnapplied(_ updated: Bottle) {
+        if settingsDrafts[updated.id] == nil { settingsDrafts[updated.id] = updated }
+    }
+
     /// True when two versions of a bottle agree on everything the Settings tab edits.
     static func sameSettings(_ a: Bottle, _ b: Bottle) -> Bool {
         a.name == b.name && a.engineID == b.engineID && a.windowsVersion == b.windowsVersion && a.settings == b.settings
+    }
+
+    /// `base` with the fields the Settings tab edits taken from `source`.
+    static func withSettings(of source: Bottle, on base: Bottle) -> Bottle {
+        var result = base
+        result.name = source.name
+        result.engineID = source.engineID
+        result.windowsVersion = source.windowsVersion
+        result.settings = source.settings
+        return result
     }
 
     /// Drops the Settings draft once what was saved matches it (other pending
@@ -411,7 +448,7 @@ final class AppModel: ObservableObject {
     /// Applies a compatibility entry's recommended settings, but only on an
     /// engine that can run the title, and only renderers that engine offers.
     func applyRecommendation(_ entry: GameCompatibility.Entry, to bottle: Bottle) {
-        guard let recommendation = entry.recommendation else { return }
+        guard let recommendation = entry.recommendation, let bottle = self.bottle(bottle.id) else { return }
         let engine = engine(for: bottle)
         if let problem = GameCompatibility.assessment(of: entry, engine: engine) {
             alert = AppAlert(title: "\(entry.title) cannot run in \(bottle.name)", message: problem)
@@ -425,8 +462,9 @@ final class AppModel: ObservableObject {
             }
             return result
         }
-        // Keep an open Settings draft consistent, so a later Apply does not undo this.
-        if let draft = settingsDrafts[bottle.id] { settingsDrafts[bottle.id] = recommended(draft) }
+        // Put it in the Settings draft as well: an open draft stays consistent,
+        // so a later Apply does not undo it, and a deferred apply is not lost.
+        settingsDrafts[bottle.id] = recommended(settingsDrafts[bottle.id] ?? bottle)
         save(recommended(bottle))
     }
 
@@ -493,12 +531,15 @@ final class AppModel: ObservableObject {
     }
 
     /// Saves metadata-only changes (pins, names) without re-applying settings.
-    func persist(_ updated: Bottle) {
+    @discardableResult
+    func persist(_ updated: Bottle) -> Bool {
         do {
             try store.save(updated)
             if let index = bottles.firstIndex(where: { $0.id == updated.id }) { bottles[index] = updated }
+            return true
         } catch {
             alert = AppAlert(title: "Could not save \(updated.name)", message: error.localizedDescription)
+            return false
         }
     }
 
@@ -506,12 +547,27 @@ final class AppModel: ObservableObject {
 
     /// Launches a target. Steam games flagged by the compatibility database ask
     /// for confirmation first (or explain why they cannot run on this engine).
-    func launch(_ target: LaunchTarget, in bottle: Bottle, confirmed: Bool = false, waitForChildren: Bool = false) {
+    /// `duringOperation` lets an operation start a program in its own bottle
+    /// (Install Steam's first run of Steam).
+    func launch(_ target: LaunchTarget, in bottle: Bottle, confirmed: Bool = false, waitForChildren: Bool = false,
+                duringOperation: Bool = false) {
+        // Duplicating copies the prefix and applying settings changes it under
+        // the wineserver, so nothing starts while an operation runs.
+        if !duringOperation, let current = activity[bottle.id] {
+            alert = AppAlert(title: "\(bottle.name) is busy",
+                             message: "\(current) is still running. Start \(target.displayName) once it has finished.")
+            return
+        }
         guard let engine = requireEngine(for: bottle) else { return }
         if !confirmed, case .steamGame(let appID, _) = target, let entry = GameCompatibility.lookup(appID: appID, name: nil) {
             if let problem = GameCompatibility.assessment(of: entry, engine: engine) {
                 launchRequest = LaunchRequest(target: target, bottleID: bottle.id, title: "\(entry.title) needs CrossOver",
                                               message: "\(problem)\n\n\(entry.note)", canLaunchAnyway: false)
+                return
+            }
+            if let advice = GameCompatibility.advisory(of: entry, engine: engine) {
+                launchRequest = LaunchRequest(target: target, bottleID: bottle.id, title: "Update CrossOver for \(entry.title)",
+                                              message: advice, canLaunchAnyway: true)
                 return
             }
             switch entry.rating {
@@ -595,7 +651,7 @@ final class AppModel: ObservableObject {
             self.refreshContents(bottleID)
             // Steam updates itself on its first run, as CrossOver's Steam install does.
             guard let current = self.bottle(bottleID) else { return } // removed meanwhile
-            self.launch(.steamClient(steam), in: current)
+            self.launch(.steamClient(steam), in: current, duringOperation: true)
         }
     }
 

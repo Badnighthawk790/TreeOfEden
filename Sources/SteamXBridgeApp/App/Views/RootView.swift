@@ -45,8 +45,8 @@ struct RootView: View {
         .alert("Quit programs to apply these settings?", isPresented: Binding(
             get: { model.pendingApply != nil },
             set: { if !$0 { model.pendingApply = nil } }
-        ), presenting: model.pendingApply) { _ in
-            Button("Quit Programs and Apply") { model.confirmPendingApply(quitFirst: true) }
+        ), presenting: model.pendingApply) { pending in
+            Button("Quit Programs and Apply") { model.confirmPendingApply(pending) }
             Button("Not Now", role: .cancel) { model.pendingApply = nil }
         } message: { pending in
             Text("Programs are running in \(pending.updated.name), including Steam if it is open. These settings only take effect when every program in the bottle has quit. Your changes stay in the Settings tab until you apply them.")

@@ -181,6 +181,12 @@ final class GameCompatibilityTests: XCTestCase {
         let gptk = WineEngine(kind: .gamePortingToolkit, name: "GPTK", version: "3.0", loaderPath: "/g/wine64",
                               wineserverPath: nil, bundlePath: nil, dxvkSourcePath: nil, architectures: [.x86_64], features: [.d3dMetal])
         XCTAssertTrue(GameCompatibility.assessment(of: entry, engine: gptk)?.contains("create a new CrossOver bottle") == true)
+        // The Preview runs CrossOver bottles, so it is told to switch engines, not bottles.
+        let preview = WineEngine(kind: .crossOverPreview, name: "CrossOver Preview", version: "26.5", loaderPath: "/p/wine",
+                                 wineserverPath: nil, bundlePath: nil, dxvkSourcePath: nil, architectures: [.arm64], features: [])
+        let previewProblem = try XCTUnwrap(GameCompatibility.assessment(of: entry, engine: preview))
+        XCTAssertTrue(previewProblem.contains("no D3DMetal"), previewProblem)
+        XCTAssertFalse(previewProblem.contains("cannot be switched"), previewProblem)
         XCTAssertFalse(entry.note.contains("including online play"), "online play is not promised")
     }
 

@@ -145,12 +145,7 @@ struct BottleSettingsView: View {
                     updateDraft { $0.name = name }
                     // Copy only the editable fields onto the current bottle, so
                     // pins added meanwhile are kept.
-                    var updated = bottle
-                    updated.name = name
-                    updated.engineID = draft.engineID
-                    updated.windowsVersion = draft.windowsVersion
-                    updated.settings = draft.settings
-                    model.save(updated)
+                    model.save(AppModel.withSettings(of: draft, on: bottle))
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!hasChanges)

@@ -130,8 +130,12 @@ enum GameCompatibility {
     static func assessment(of entry: Entry, engine: WineEngine?) -> String? {
         guard let minimum = entry.minimumCrossOverVersion else { return nil }
         guard let engine else { return "Needs CrossOver \(minimum) or later; this bottle has no engine selected." }
-        guard engine.kind == .crossOver else {
+        guard engine.isCrossOver else {
             return "Needs CrossOver \(minimum) or later. \(engine.name) cannot run it, and this bottle cannot be switched to CrossOver: create a new CrossOver bottle and install Steam in it."
+        }
+        guard engine.kind == .crossOver else {
+            // The ARM64 Preview runs CrossOver bottles but has no D3DMetal.
+            return "Needs CrossOver \(minimum) or later. \(engine.name) has no D3DMetal: choose CrossOver as this bottle's engine in its Settings."
         }
         if let version = engine.version, Bottle.compareVersions(version, minimum) == .orderedAscending {
             return "Needs CrossOver \(minimum) or later; this bottle uses \(engine.name)."

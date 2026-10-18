@@ -24,8 +24,8 @@ SteamXBridge is a CrossOver-style bottle manager for Apple Silicon Macs. It runs
 | Engine | How to get it | Notes |
 | --- | --- | --- |
 | **CrossOver 26** (CodeWeavers) | [codeweavers.com](https://www.codeweavers.com/crossover), paid, with a free trial | Most compatible. Bottles are run through CrossOver's own launcher, so its fixes apply. The only engine that runs HELLDIVERS 2. |
-| **Game Porting Toolkit** (Apple D3DMetal) | `brew install --cask gcenx/wine/game-porting-toolkit` | Direct3D 11/12 through D3DMetal. |
-| **WhiskyWine** | Installed by Whisky or the community fork (frankea/Whisky) | D3DMetal and DXVK; Whisky itself is archived. |
+| **Game Porting Toolkit** (Apple D3DMetal) | `brew install --cask gcenx/wine/game-porting-toolkit` | Direct3D 11/12 through D3DMetal. Steam's window can render black here (its web view, steamwebhelper). |
+| **WhiskyWine** | Installed by Whisky or the community fork (frankea/Whisky) | D3DMetal and DXVK; Whisky itself is archived. Steam's window can render black here too. |
 | **Wine Stable / Devel / Staging** | [Gcenx macOS builds](https://github.com/Gcenx/macOS_Wine_builds) (the Homebrew casks were disabled in September 2026) | Upstream Wine; no D3DMetal or MSync. Steam's window can render black here (an open Wine bug). |
 | **Sikarugir** wrappers | Sikarugir-App/Sikarugir | Each wrapper's built-in engine is usable for its own prefix. |
 | **Custom** | Settings > Add Engine… | Any `wine` / `wine64` binary. |
@@ -34,7 +34,7 @@ Every shipping engine except CrossOver's ARM64 Preview is x86_64 and needs **Ros
 
 ## Can it run HELLDIVERS 2?
 
-**Yes, with CrossOver 26 or later.** CodeWeavers added it in CrossOver 26 (February 2026) and rates it *Runs Well* on 26.3, including online play. HELLDIVERS 2's anti-cheat (nProtect GameGuard) works only with CodeWeavers' own patches. It does not get past GameGuard in Whisky, the Game Porting Toolkit or plain Wine. CodeWeavers calls the anti-cheat working "a happy accident", and game patches have broken it before (CrossOver 26.2 shipped a fix), so it can break again.
+**Yes, with CrossOver 26 or later; 26.2 or later is recommended.** CodeWeavers added it in CrossOver 26 (February 2026) and rates it *Runs Well* on 26.3. After a game update it stopped launching on 26.0 and 26.1 until 26.2 fixed it. Online play has worked, but it is not guaranteed. HELLDIVERS 2's anti-cheat (nProtect GameGuard) works only with CodeWeavers' own patches. It does not get past GameGuard in Whisky, the Game Porting Toolkit or plain Wine. CodeWeavers calls the anti-cheat working "a happy accident", and game patches have broken it before, so it can break again.
 
 Setup:
 1. Create a bottle with the CrossOver engine and let SteamXBridge install Steam.

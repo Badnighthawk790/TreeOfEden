@@ -238,18 +238,27 @@ struct BottleOperations {
     /// Applies the settings that are not plain launch-time variables: CrossOver's
     /// cxbottle.conf, the Windows version, High Resolution Mode, and DXVK files.
     func applySettings(from old: Bottle?, to bottle: Bottle, engine: WineEngine) async throws {
+        let configURL = bottle.prefixURL.appendingPathComponent("cxbottle.conf")
+        // The conf is written first; if a later step fails it is put back, so it
+        // keeps matching the bottle record the caller rolls back to.
+        let savedConfig = bottle.isCrossOverBottle ? try? Data(contentsOf: configURL) : nil
         if bottle.isCrossOverBottle {
             try writeCrossOverConfig(for: bottle, previous: old, engine: engine)
         }
-        if let old, old.windowsVersion != bottle.windowsVersion {
-            try await runChecked(try planner(for: bottle, engine: engine).setWindowsVersion(bottle.windowsVersion),
-                                 bottle: bottle, program: "windows-version")
+        do {
+            if let old, old.windowsVersion != bottle.windowsVersion {
+                try await runChecked(try planner(for: bottle, engine: engine).setWindowsVersion(bottle.windowsVersion),
+                                     bottle: bottle, program: "windows-version")
+            }
+            if old?.settings.highResolutionMode != bottle.settings.highResolutionMode,
+               old != nil || bottle.settings.highResolutionMode {
+                try await applyHighResolution(bottle.settings.highResolutionMode, bottle: bottle, engine: engine)
+            }
+            try installDXVKIfNeeded(bottle: bottle, engine: engine)
+        } catch {
+            if let savedConfig { try? savedConfig.write(to: configURL, options: .atomic) }
+            throw error
         }
-        if old?.settings.highResolutionMode != bottle.settings.highResolutionMode,
-           old != nil || bottle.settings.highResolutionMode {
-            try await applyHighResolution(bottle.settings.highResolutionMode, bottle: bottle, engine: engine)
-        }
-        try installDXVKIfNeeded(bottle: bottle, engine: engine)
     }
 
     /// Writes SteamXBridge's keys to cxbottle.conf, atomically. With `previous`,

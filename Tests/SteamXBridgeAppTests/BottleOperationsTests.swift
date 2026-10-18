@@ -189,6 +189,33 @@ final class BottleOperationsTests: XCTestCase {
         XCTAssertEqual(after.value(section: "EnvironmentVariables", key: "CX_GRAPHICS_BACKEND"), "dxvk")
     }
 
+    func testFailedApplyPutsCrossOverConfigBack() async throws {
+        let tmp = try TemporaryDirectory()
+        let bottles = try tmp.directory("CrossOverBottles")
+        let ops = try operations(tmp, bottles: bottles)
+        var engine = try fakeCrossOver(tmp, bottles: bottles)
+        // A CrossOver whose winecfg fails, after the conf has been written.
+        let failing = try tmp.file("Failing.app/Contents/SharedSupport/CrossOver/bin/wine", contents: """
+        #!/bin/sh
+        case "$*" in *winecfg*) exit 2 ;; esac
+        exit 0
+        """, executable: true)
+        engine.loaderPath = failing.path
+        let prefix = try tmp.directory("CrossOverBottles/Steam/drive_c").deletingLastPathComponent()
+        let original = "[Bottle]\n\"Template\" = \"win10_64\"\n[EnvironmentVariables]\n\"CX_GRAPHICS_BACKEND\" = \"dxvk\"\n"
+        try tmp.file("CrossOverBottles/Steam/cxbottle.conf", contents: original)
+        let linked = try ops.store.linkBottle(prefix: prefix, named: "Steam", source: "CrossOver", existing: [])
+        var changed = linked
+        changed.settings.graphics = .d3dMetal
+        changed.windowsVersion = linked.windowsVersion == .win11 ? .win10 : .win11
+        do {
+            try await ops.applySettings(from: linked, to: changed, engine: engine)
+            XCTFail("expected winecfg to fail")
+        } catch {}
+        let after = try String(contentsOf: prefix.appendingPathComponent("cxbottle.conf"), encoding: .utf8)
+        XCTAssertEqual(after, original, "the conf matches the bottle record the app rolls back to")
+    }
+
     func testFailedCrossOverCreateCleansUpForARetry() async throws {
         let tmp = try TemporaryDirectory()
         let bottles = try tmp.directory("CrossOverBottles")
