@@ -80,6 +80,28 @@ final class EngineDiscoveryTests: XCTestCase {
         XCTAssertFalse(sikarugir.needsRosetta)
     }
 
+    func testFindsDXMTInTheWhiskyForkRuntime() throws {
+        let tmp = try TemporaryDirectory()
+        let home = try tmp.directory("home")
+        let libraries = "home/Library/Application Support/com.franke.Whisky/Libraries"
+        try tmp.file("\(libraries)/Wine/bin/wine", data: x86Loader, executable: true)
+        try tmp.file("\(libraries)/Wine/lib/wine/x86_64-unix/winemetal.so", data: x86Loader)
+        try tmp.file("\(libraries)/DXMT/x64/d3d11.dll", contents: "MZ")
+        try tmp.file("\(libraries)/DXVK/x64/d3d11.dll", contents: "MZ")
+        let engine = try XCTUnwrap(EngineDiscovery(home: home, applicationDirectories: [], homebrewGPTKRoot: nil)
+            .whiskyEngines().first)
+        XCTAssertTrue(engine.supports(.dxmt))
+        XCTAssertEqual(engine.dxmtSourcePath, home.appendingPathComponent("Library/Application Support/com.franke.Whisky/Libraries/DXMT").path)
+        XCTAssertEqual(engine.graphicsBackends, [.automatic, .dxmt, .dxvk, .wineD3D])
+        XCTAssertNil(engine.automaticLayer, "Automatic keeps the engine's own Direct3D outside the built-in engine")
+
+        // Without winemetal.so in the engine, DXMT's DLLs could not reach Metal.
+        try FileManager.default.removeItem(at: tmp.url.appendingPathComponent("\(libraries)/Wine/lib/wine/x86_64-unix/winemetal.so"))
+        let without = try XCTUnwrap(EngineDiscovery(home: home, applicationDirectories: [], homebrewGPTKRoot: nil)
+            .whiskyEngines().first)
+        XCTAssertFalse(without.supports(.dxmt))
+    }
+
     func testRejectsImpostorCrossOverBundles() throws {
         let tmp = try TemporaryDirectory()
         let apps = try tmp.directory("Applications")
