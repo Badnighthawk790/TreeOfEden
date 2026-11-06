@@ -90,8 +90,11 @@ struct NewBottleSheet: View {
         if engine.isCrossOver {
             return "CrossOver creates and manages this bottle (64-bit, in CrossOver's Bottles folder), so CrossOver itself can open it too. Requires a CrossOver license or trial."
         }
-        var text = "SteamXBridge creates a 64-bit Wine prefix for this bottle."
+        var text = engine.kind == .builtIn
+            ? "SteamXBridge creates this bottle on its built-in engine; nothing else needs to be installed."
+            : "SteamXBridge creates a 64-bit Wine prefix for this bottle."
         if engine.supports(.d3dMetal) { text += " Direct3D 11/12 runs through D3DMetal." }
+        if engine.automaticLayer == .dxmt { text += " Direct3D 10/11 games run on Metal through DXMT; DirectX 12-only games are not supported." }
         if engine.needsRosetta { text += " This engine runs under Rosetta 2." }
         return text
     }
@@ -106,8 +109,9 @@ struct EnginesSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Wine Engines")
                 .font(.title3.weight(.semibold))
-            Text("SteamXBridge runs Windows programs with Wine engines installed on this Mac. It never bundles or modifies them.")
+            Text("SteamXBridge brings its own built-in engine. It can also use Wine engines installed on this Mac, such as CrossOver, without changing them.")
                 .foregroundStyle(.secondary)
+            RuntimeStatusView()
 
             if model.engines.isEmpty {
                 EngineHelpView()

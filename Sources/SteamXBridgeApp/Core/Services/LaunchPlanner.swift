@@ -109,7 +109,6 @@ struct LaunchPlanner {
 
     /// Keeps Wine from writing macOS app shims and menu entries for every installer.
     static let menuBuilderOverride = "winemenubuilder.exe=d"
-    static let dxvkOverride = "dxgi,d3d9,d3d10core,d3d11=n,b"
     static let debugChannels = "+seh,+tid,+loaddll,err+all,fixme-all"
 
     // MARK: Checks
@@ -244,10 +243,13 @@ struct LaunchPlanner {
                 program[0] = first + ".exe"
             }
             arguments += ["--cx-app"] + program
+            // DXMT's own options are not cxbottle.conf keys, so they travel in
+            // the environment; the bottle's custom variables still win.
+            let dxmt = bottle.settings.graphics == .dxmt ? dxmtEnvironment() : [:]
             return WineInvocation(
                 executable: engine.loaderURL,
                 arguments: arguments,
-                environment: customEnvironment(),
+                environment: dxmt.merging(customEnvironment()) { _, custom in custom },
                 workingDirectory: workingDirectory,
                 displayName: displayName
             )
@@ -273,11 +275,13 @@ struct LaunchPlanner {
         ]
         let custom = customEnvironment()
         var overrides = [Self.menuBuilderOverride]
-        if s.graphics == .dxvk, engine.supports(.dxvk) {
-            overrides.append(Self.dxvkOverride)
+        // The layer BottleOperations copied into the prefix before the launch.
+        let active = engine.layer(for: s.graphics)
+        if let active {
+            overrides += active.layer.overrides(for: active.layer.available(in: active.source))
         }
         // The user's overrides are appended (later entries win in Wine), not
-        // allowed to replace DXVK's and the menu-builder override.
+        // allowed to replace the layer's and the menu-builder override.
         if let user = custom["WINEDLLOVERRIDES"]?.trimmingCharacters(in: .whitespaces), !user.isEmpty {
             overrides.append(user)
         }
@@ -295,7 +299,23 @@ struct LaunchPlanner {
         // Read by Rosetta (macOS 15+), so it applies to every x86_64 engine.
         if s.advertiseAVX { env["ROSETTA_ADVERTISE_AVX"] = "1" }
         if engine.supports(.d3dMetal), let dxr = rayTracingValue { env["D3DM_SUPPORT_DXR"] = dxr }
+        if active?.layer == .dxmt { env.merge(dxmtEnvironment()) { _, new in new } }
         for (key, value) in custom where key != "WINEDLLOVERRIDES" { env[key] = value }
+        return env
+    }
+
+    /// DXMT's MetalFX output upscaling and frame cap, from the bottle's settings.
+    func dxmtEnvironment() -> [String: String] {
+        let s = bottle.settings
+        var env: [String: String] = [:]
+        var config: [String] = []
+        if s.metalFXUpscaling {
+            env["DXMT_METALFX_SPATIAL_SWAPCHAIN"] = "1"
+            let scale = min(max(s.metalFXScale, 1.0), 2.0)
+            config.append("d3d11.metalSpatialUpscaleFactor=" + String(format: "%.2f", scale))
+        }
+        if s.frameRateLimit > 0 { config.append("d3d11.preferredMaxFrameRate=\(s.frameRateLimit)") }
+        if !config.isEmpty { env["DXMT_CONFIG"] = config.map { $0 + ";" }.joined() }
         return env
     }
 

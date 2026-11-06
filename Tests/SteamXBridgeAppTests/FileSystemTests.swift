@@ -370,29 +370,101 @@ final class BottleStoreTests: XCTestCase {
     }
 }
 
-final class DXVKInstallerTests: XCTestCase {
-    func testCopiesOnlyDXVKDLLsIntoTheRightFolders() throws {
-        let tmp = try TemporaryDirectory()
-        let source = try tmp.directory("DXVK")
-        try tmp.file("DXVK/x64/d3d11.dll", contents: "x64-d3d11")
-        try tmp.file("DXVK/x64/README.txt", contents: "not a dll")   // must be skipped, not stop the copy
-        try tmp.file("DXVK/x64/dxgi.dll", contents: "x64-dxgi")
-        try tmp.file("DXVK/x32/d3d11.dll", contents: "x32-d3d11")
-        let prefix = try tmp.directory("prefix")
-        try tmp.file("prefix/drive_c/windows/system32/d3d11.dll", contents: "wine builtin stub")
+final class GraphicsLayerInstallerTests: XCTestCase {
+    private let windows = "prefix/drive_c/windows"
 
-        XCTAssertFalse(DXVKInstaller.isInstalled(in: prefix))
-        let installed = try DXVKInstaller.install(from: source, into: prefix)
-        XCTAssertEqual(installed, ["system32/d3d11.dll", "system32/dxgi.dll", "syswow64/d3d11.dll"])
-        XCTAssertEqual(try String(contentsOf: prefix.appendingPathComponent("drive_c/windows/system32/d3d11.dll"), encoding: .utf8), "x64-d3d11")
-        XCTAssertEqual(try String(contentsOf: prefix.appendingPathComponent("drive_c/windows/syswow64/d3d11.dll"), encoding: .utf8), "x32-d3d11")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: prefix.appendingPathComponent("drive_c/windows/system32/README.txt").path))
-        XCTAssertTrue(DXVKInstaller.isInstalled(in: prefix))
+    private func read(_ tmp: TemporaryDirectory, _ relative: String) -> String? {
+        try? String(contentsOf: tmp.url.appendingPathComponent(relative), encoding: .utf8)
+    }
+
+    /// An engine with Wine's own Direct3D DLLs, a DXMT and a DXVK payload, and
+    /// an initialized prefix holding wineboot's copies of Wine's DLLs.
+    private func setUp(_ tmp: TemporaryDirectory) throws -> (engine: URL, dxmt: URL, dxvk: URL, prefix: URL) {
+        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll"] {
+            try tmp.file("engine/lib/wine/x86_64-windows/\(dll)", contents: "wine64 \(dll)")
+            try tmp.file("engine/lib/wine/i386-windows/\(dll)", contents: "wine32 \(dll)")
+            try tmp.file("\(windows)/system32/\(dll)", contents: "wine64 \(dll)")
+            try tmp.file("\(windows)/syswow64/\(dll)", contents: "wine32 \(dll)")
+        }
+        for dll in ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"] {
+            try tmp.file("DXMT/x64/\(dll)", contents: "dxmt64 \(dll)")
+            try tmp.file("DXMT/x32/\(dll)", contents: "dxmt32 \(dll)")
+        }
+        try tmp.file("DXMT/x64/nvapi64.dll", contents: "not deployed")
+        for dll in ["d3d11.dll", "d3d10core.dll"] {
+            try tmp.file("DXVK/x64/\(dll)", contents: "dxvk64 \(dll)")
+            try tmp.file("DXVK/x32/\(dll)", contents: "dxvk32 \(dll)")
+        }
+        try tmp.file("DXVK/x64/README.txt", contents: "not a dll")
+        return (tmp.url.appendingPathComponent("engine"), tmp.url.appendingPathComponent("DXMT"),
+                tmp.url.appendingPathComponent("DXVK"), tmp.url.appendingPathComponent("prefix"))
+    }
+
+    func testSwitchesBetweenLayersWithoutMixingTheirDLLs() throws {
+        let tmp = try TemporaryDirectory()
+        let (engine, dxmt, dxvk, prefix) = try setUp(tmp)
+
+        let first = try GraphicsLayerInstaller.apply(.dxmt, from: dxmt, engineRoot: engine, to: prefix)
+        XCTAssertEqual(first, ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"])
+        XCTAssertEqual(read(tmp, "\(windows)/system32/dxgi.dll"), "dxmt64 dxgi.dll")
+        XCTAssertEqual(read(tmp, "\(windows)/syswow64/winemetal.dll"), "dxmt32 winemetal.dll")
+        XCTAssertNil(read(tmp, "\(windows)/system32/nvapi64.dll"), "only the layer's own DLLs are deployed")
+        XCTAssertEqual(GraphicsLayerInstaller.installed(in: prefix)?.layer, .dxmt)
+
+        // DXVK-macOS has no dxgi.dll: DXMT's must not be left under DXVK's d3d11.
+        let second = try GraphicsLayerInstaller.apply(.dxvk, from: dxvk, engineRoot: engine, to: prefix)
+        XCTAssertEqual(second, ["d3d10core.dll", "d3d11.dll"])
+        XCTAssertEqual(read(tmp, "\(windows)/system32/d3d11.dll"), "dxvk64 d3d11.dll")
+        XCTAssertEqual(read(tmp, "\(windows)/system32/dxgi.dll"), "wine64 dxgi.dll", "Wine's own copy is back")
+        XCTAssertEqual(read(tmp, "\(windows)/syswow64/dxgi.dll"), "wine32 dxgi.dll")
+        XCTAssertNil(read(tmp, "\(windows)/system32/winemetal.dll"), "removed when the engine has no copy of its own")
+        XCTAssertNil(read(tmp, "\(windows)/system32/README.txt"))
+
+        // Back to Wine's own Direct3D.
+        XCTAssertEqual(try GraphicsLayerInstaller.apply(nil, from: nil, engineRoot: engine, to: prefix), [])
+        XCTAssertEqual(read(tmp, "\(windows)/system32/d3d11.dll"), "wine64 d3d11.dll")
+        XCTAssertEqual(read(tmp, "\(windows)/syswow64/d3d10core.dll"), "wine32 d3d10core.dll")
+        XCTAssertNil(GraphicsLayerInstaller.installed(in: prefix))
+    }
+
+    func testLeavesAMatchingPrefixAloneAndReinstallsAfterARuntimeUpdate() throws {
+        let tmp = try TemporaryDirectory()
+        let (engine, dxmt, _, prefix) = try setUp(tmp)
+        try GraphicsLayerInstaller.apply(.dxmt, from: dxmt, engineRoot: engine, to: prefix)
+        let d3d11 = prefix.appendingPathComponent("drive_c/windows/system32/d3d11.dll")
+        try Data("touched".utf8).write(to: d3d11)
+        try GraphicsLayerInstaller.apply(.dxmt, from: dxmt, engineRoot: engine, to: prefix)
+        XCTAssertEqual(try String(contentsOf: d3d11, encoding: .utf8), "touched", "nothing is copied when the prefix matches")
+
+        try tmp.file("DXMT-new/x64/d3d11.dll", contents: "dxmt64 new")
+        try GraphicsLayerInstaller.apply(.dxmt, from: tmp.url.appendingPathComponent("DXMT-new"), engineRoot: engine, to: prefix)
+        XCTAssertEqual(try String(contentsOf: d3d11, encoding: .utf8), "dxmt64 new", "a new runtime's DXMT replaces the old one")
+        XCTAssertEqual(read(tmp, "\(windows)/system32/dxgi.dll"), "wine64 dxgi.dll",
+                       "DLLs the new payload lacks go back to Wine's")
+    }
+
+    func testReadsTheBetaDXVKMarker() throws {
+        let tmp = try TemporaryDirectory()
+        let (engine, _, _, prefix) = try setUp(tmp)
+        try tmp.file("\(windows)/system32/.steamxbridge-dxvk", contents: "system32/d3d11.dll\nsyswow64/d3d11.dll")
+        try tmp.file("\(windows)/system32/d3d11.dll", contents: "old dxvk")
+        XCTAssertEqual(GraphicsLayerInstaller.installed(in: prefix), .init(layer: .dxvk, source: "", dlls: ["d3d11.dll"]))
+        try GraphicsLayerInstaller.apply(nil, from: nil, engineRoot: engine, to: prefix)
+        XCTAssertEqual(read(tmp, "\(windows)/system32/d3d11.dll"), "wine64 d3d11.dll")
+        XCTAssertNil(read(tmp, "\(windows)/system32/.steamxbridge-dxvk"))
+    }
+
+    func testOverridesFollowTheInstalledDLLs() {
+        XCTAssertEqual(GraphicsLayer.dxmt.overrides(for: ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"]),
+                       ["d3d10core,d3d11,dxgi=n,b", "winemetal=b"])
+        XCTAssertEqual(GraphicsLayer.dxvk.overrides(for: ["d3d10core.dll", "d3d11.dll"]), ["d3d10core,d3d11=n,b"])
+        XCTAssertEqual(GraphicsLayer.dxvk.overrides(for: []), [])
     }
 
     func testFailsWhenTheSourceHasNoDLLs() throws {
         let tmp = try TemporaryDirectory()
         try tmp.file("Empty/x64/notes.txt")
-        XCTAssertThrowsError(try DXVKInstaller.install(from: tmp.url.appendingPathComponent("Empty"), into: try tmp.directory("prefix")))
+        XCTAssertThrowsError(try GraphicsLayerInstaller.apply(.dxvk, from: tmp.url.appendingPathComponent("Empty"),
+                                                              engineRoot: tmp.url, to: try tmp.directory("prefix")))
     }
 }

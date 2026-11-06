@@ -27,11 +27,11 @@ enum GraphicsBackend: String, Codable, CaseIterable, Identifiable {
 
     var summary: String {
         switch self {
-        case .automatic: return "Use the engine's default renderer."
+        case .automatic: return "Use the engine's default renderer (DXMT on the built-in engine)."
         case .d3dMetal: return "Apple's Direct3D 11/12 to Metal translator. Best for most modern games."
-        case .dxmt: return "Open-source Direct3D 10/11 to Metal translator. Try it when D3DMetal misbehaves on a DX11 game."
-        case .dxvk: return "Direct3D 9/10/11 through Vulkan and MoltenVK. Useful for older DX9 games."
-        case .wineD3D: return "Wine's OpenGL renderer. Slowest; a last-resort compatibility fallback."
+        case .dxmt: return "Open-source Direct3D 10/11 to Metal translator. The fastest open option for DX11 games."
+        case .dxvk: return "Direct3D 10/11 through Vulkan and MoltenVK. Try it when a DX11 game misrenders under DXMT."
+        case .wineD3D: return "Wine's own Direct3D. Slowest; handles DX9 and older, and is a last-resort fallback."
         }
     }
 }
@@ -94,6 +94,13 @@ struct BottleSettings: Codable, Equatable {
     var rayTracing: RayTracingMode = .automatic
     /// Translate in-game DLSS to MetalFX upscaling (CrossOver 26+, D3DMetal or DXMT).
     var dlssMetalFX = false
+    /// DXMT only: upscale the game's output with MetalFX, so it can render at
+    /// a lower resolution than the display.
+    var metalFXUpscaling = false
+    /// How much MetalFX enlarges the game's output (1.0-2.0).
+    var metalFXScale = 1.5
+    /// DXMT only: frame-rate cap; 0 is off. Saves heat and battery on fanless Macs.
+    var frameRateLimit = 0
     /// Ask Rosetta to advertise AVX/AVX2 to x86 programs (macOS 15 and later).
     var advertiseAVX = true
     /// Keep Wine's debug output (WINEDEBUG) instead of silencing it.
@@ -116,6 +123,9 @@ struct BottleSettings: Codable, Equatable {
         metalHUD = (try? c.decodeIfPresent(Bool.self, forKey: .metalHUD)) ?? d.metalHUD
         rayTracing = (try? c.decodeIfPresent(RayTracingMode.self, forKey: .rayTracing)) ?? d.rayTracing
         dlssMetalFX = (try? c.decodeIfPresent(Bool.self, forKey: .dlssMetalFX)) ?? d.dlssMetalFX
+        metalFXUpscaling = (try? c.decodeIfPresent(Bool.self, forKey: .metalFXUpscaling)) ?? d.metalFXUpscaling
+        metalFXScale = (try? c.decodeIfPresent(Double.self, forKey: .metalFXScale)) ?? d.metalFXScale
+        frameRateLimit = (try? c.decodeIfPresent(Int.self, forKey: .frameRateLimit)) ?? d.frameRateLimit
         advertiseAVX = (try? c.decodeIfPresent(Bool.self, forKey: .advertiseAVX)) ?? d.advertiseAVX
         debugLogging = (try? c.decodeIfPresent(Bool.self, forKey: .debugLogging)) ?? d.debugLogging
         steamCompatibilityFlags = (try? c.decodeIfPresent(Bool.self, forKey: .steamCompatibilityFlags)) ?? d.steamCompatibilityFlags

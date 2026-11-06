@@ -254,7 +254,7 @@ struct BottleOperations {
                old != nil || bottle.settings.highResolutionMode {
                 try await applyHighResolution(bottle.settings.highResolutionMode, bottle: bottle, engine: engine)
             }
-            try installDXVKIfNeeded(bottle: bottle, engine: engine)
+            try syncGraphicsLayer(bottle: bottle, engine: engine)
         } catch {
             if let savedConfig { try? savedConfig.write(to: configURL, options: .atomic) }
             throw error
@@ -292,12 +292,13 @@ struct BottleOperations {
         }
     }
 
-    /// Plain engines need DXVK's DLLs copied into the prefix before the
-    /// overrides in the launch environment can take effect.
-    func installDXVKIfNeeded(bottle: Bottle, engine: WineEngine) throws {
-        guard bottle.settings.graphics == .dxvk, !engine.isCrossOver, let source = engine.dxvkSourcePath,
-              bottle.isInitialized, !DXVKInstaller.isInstalled(in: bottle.prefixURL) else { return }
-        try DXVKInstaller.install(from: URL(fileURLWithPath: source), into: bottle.prefixURL)
+    /// Plain engines need a layer's DLLs (DXMT, DXVK) copied into the prefix
+    /// before the overrides in the launch environment can take effect, and
+    /// Wine's own put back when the bottle leaves the layer.
+    func syncGraphicsLayer(bottle: Bottle, engine: WineEngine) throws {
+        guard !engine.isCrossOver, bottle.isInitialized else { return }
+        let active = engine.layer(for: bottle.settings.graphics)
+        try GraphicsLayerInstaller.apply(active?.layer, from: active?.source, engineRoot: engine.rootURL, to: bottle.prefixURL)
     }
 
     // MARK: Running
@@ -308,7 +309,7 @@ struct BottleOperations {
     func launch(_ target: LaunchTarget, in bottle: Bottle, engine: WineEngine, runID: UUID = UUID(),
                 waitForChildren: Bool = false,
                 onExit: @escaping @Sendable (Int32) -> Void) throws -> RunningProgram {
-        try installDXVKIfNeeded(bottle: bottle, engine: engine)
+        try syncGraphicsLayer(bottle: bottle, engine: engine)
         let name = target.displayName
         let log = store.logURL(for: bottle, program: name)
         let wineLog = engine.isCrossOver

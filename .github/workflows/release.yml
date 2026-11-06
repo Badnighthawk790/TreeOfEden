@@ -71,6 +71,11 @@ jobs:
           BUILD_NUMBER: ${{ github.run_number }}
         run: ./scripts/package_macos_app.sh
 
+      - name: Install the bundled runtime the way the app does
+        env:
+          SXB_RUNTIME_SOURCE: dist/SteamXBridge.app/Contents/Resources/Runtime
+        run: swift test --filter RuntimeInstallerTests/testInstallsTheRealRuntime
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:

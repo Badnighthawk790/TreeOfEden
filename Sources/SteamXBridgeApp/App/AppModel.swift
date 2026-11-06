@@ -53,6 +53,15 @@ struct LaunchRequest: Identifiable {
     let canLaunchAnyway: Bool
 }
 
+/// The built-in engine's state: it is unpacked from the app on first launch.
+enum RuntimeStatus: Equatable {
+    case preparing(String)
+    case ready
+    /// This build carries no runtime (a `swift run` development build).
+    case notBundled
+    case failed(String)
+}
+
 /// Settings that can only be applied with the bottle's programs closed.
 struct PendingApply: Identifiable {
     let id = UUID()
@@ -64,6 +73,9 @@ struct PendingApply: Identifiable {
 final class AppModel: ObservableObject {
     @Published private(set) var bottles: [Bottle] = []
     @Published private(set) var detectedEngines: [WineEngine] = []
+    /// The engine bundled with the app, once it is installed.
+    @Published private(set) var builtInEngine: WineEngine?
+    @Published private(set) var runtimeStatus: RuntimeStatus = .preparing("Checking the built-in engine…")
     @Published private(set) var customEngines: [WineEngine] = []
     @Published private(set) var externalBottles: [ExternalBottle] = []
     @Published private(set) var contents: [UUID: BottleContents] = [:]
@@ -101,6 +113,7 @@ final class AppModel: ObservableObject {
         crossOverBottleDirectory = EngineDiscovery().crossOverBottleDirectory()
         customEngines = Self.loadCustomEngines()
         reload()
+        prepareRuntime()
     }
 
     private var operations: BottleOperations {
@@ -109,7 +122,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Lookups
 
-    var engines: [WineEngine] { detectedEngines + customEngines }
+    var engines: [WineEngine] { (builtInEngine.map { [$0] } ?? []) + detectedEngines + customEngines }
     var selectedBottle: Bottle? { selection.flatMap(bottle) }
 
     func bottle(_ id: UUID) -> Bottle? { bottles.first { $0.id == id } }
@@ -123,15 +136,21 @@ final class AppModel: ObservableObject {
 
     func engine(for bottle: Bottle) -> WineEngine? {
         let candidates = compatibleEngines(for: bottle)
-        if let id = bottle.engineID, let chosen = candidates.first(where: { $0.id == id }) { return chosen }
+        if let id = bottle.engineID {
+            if let chosen = candidates.first(where: { $0.id == id }) { return chosen }
+            // The built-in engine is still being set up (or could not be):
+            // never run the bottle on some other engine in the meantime.
+            if id == InstalledRuntime.engineID { return nil }
+        }
         return candidates.first
     }
 
-    /// Best engines first: CrossOver, then WhiskyWine, the Game Porting Toolkit,
-    /// WineHQ builds, Sikarugir, custom engines, and the CrossOver Preview last.
+    /// The built-in engine first (new bottles need nothing else installed),
+    /// then CrossOver, WhiskyWine, the Game Porting Toolkit, WineHQ builds,
+    /// Sikarugir, custom engines, and the CrossOver Preview last.
     static func ordered(_ engines: [WineEngine]) -> [WineEngine] {
-        let rank: [EngineKind: Int] = [.crossOver: 0, .whisky: 1, .gamePortingToolkit: 2, .wineHQ: 3,
-                                       .sikarugir: 4, .custom: 5, .crossOverPreview: 6]
+        let rank: [EngineKind: Int] = [.builtIn: 0, .crossOver: 1, .whisky: 2, .gamePortingToolkit: 3, .wineHQ: 4,
+                                       .sikarugir: 5, .custom: 6, .crossOverPreview: 7]
         return engines.enumerated().sorted {
             (rank[$0.element.kind] ?? 9, $0.offset) < (rank[$1.element.kind] ?? 9, $1.offset)
         }.map(\.element)
@@ -207,6 +226,35 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: Built-in engine
+
+    /// Installs the bundled runtime on first launch (and after an app update
+    /// that ships a new one); later launches find it installed at once.
+    func prepareRuntime() {
+        let installer = RuntimeInstaller(source: RuntimeInstaller.bundledSource())
+        runtimeStatus = .preparing("Checking the built-in engine…")
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<InstalledRuntime, Error> in
+                Result {
+                    try installer.prepare { message in
+                        Task { @MainActor [weak self] in
+                            if case .preparing = self?.runtimeStatus { self?.runtimeStatus = .preparing(message) }
+                        }
+                    }
+                }
+            }.value
+            switch result {
+            case .success(let runtime):
+                builtInEngine = runtime.engine
+                runtimeStatus = .ready
+            case .failure(RuntimeError.notBundled):
+                runtimeStatus = .notBundled
+            case .failure(let error):
+                runtimeStatus = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     // MARK: Running work
 
     /// Runs `work`, showing `title` as the bottle's (or the app's) activity and
@@ -249,10 +297,18 @@ final class AppModel: ObservableObject {
     /// The bottle's engine, or an explanatory alert when there is none.
     private func requireEngine(for bottle: Bottle) -> WineEngine? {
         if let engine = engine(for: bottle) { return engine }
-        alert = AppAlert(title: "No engine for \(bottle.name)",
-                         message: bottle.isCrossOverBottle
-                            ? "This is a CrossOver bottle. Install CrossOver to run it."
-                            : "Install a Wine engine (CrossOver, the Game Porting Toolkit, or Wine) and check Settings > Engines.")
+        let message: String
+        if bottle.isCrossOverBottle {
+            message = "This is a CrossOver bottle. Install CrossOver to run it."
+        } else {
+            switch runtimeStatus {
+            case .preparing: message = "The built-in engine is still being set up. Try again in a moment."
+            case .failed(let reason): message = "The built-in engine could not be set up: \(reason)"
+            case .notBundled: message = RuntimeError.notBundled.errorDescription ?? ""
+            case .ready: message = "Choose an engine in the bottle's Settings."
+            }
+        }
+        alert = AppAlert(title: "No engine for \(bottle.name)", message: message)
         return nil
     }
 

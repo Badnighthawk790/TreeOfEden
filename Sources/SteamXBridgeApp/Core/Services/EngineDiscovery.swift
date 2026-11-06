@@ -157,11 +157,15 @@ struct EngineDiscovery {
             guard let loader = preferredLoader(in: bin) else { return nil }
             let dxvk = libraries.appendingPathComponent("DXVK", isDirectory: true)
             let hasDXVK = FileManager.default.fileExists(atPath: dxvk.appendingPathComponent("x64").path)
+            // The community fork's Libraries 3.1+ carry DXMT, with winemetal in the engine.
+            let dxmt = libraries.appendingPathComponent("DXMT", isDirectory: true)
+            let hasDXMT = Self.hasDXMT(payload: dxmt, engineRoot: root)
             let version = whiskyWineVersion(libraries.appendingPathComponent("WhiskyWineVersion.plist"))
             let fork = identifier == "com.franke.Whisky"
             var features: [EngineFeature] = [.msync, .esync]
             if hasD3DMetal(engineRoot: root) { features.insert(.d3dMetal, at: 0) }
             if hasDXVK { features.append(.dxvk) }
+            if hasDXMT { features.append(.dxmt) }
             return WineEngine(
                 kind: .whisky,
                 name: (fork ? "WhiskyWine (community fork)" : "WhiskyWine") + (version.map { " \($0)" } ?? ""),
@@ -171,9 +175,18 @@ struct EngineDiscovery {
                 bundlePath: nil,
                 dxvkSourcePath: hasDXVK ? dxvk.path : nil,
                 architectures: architectures(of: loader),
-                features: features
+                features: features,
+                dxmtSourcePath: hasDXMT ? dxmt.path : nil
             )
         }
+    }
+
+    /// DXMT can run on an engine when its prefix DLLs are present and the
+    /// engine carries `winemetal.so` next to its Mac driver.
+    static func hasDXMT(payload: URL, engineRoot: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: payload.appendingPathComponent("x64/d3d11.dll").path)
+            && fm.fileExists(atPath: engineRoot.appendingPathComponent("lib/wine/x86_64-unix/winemetal.so").path)
     }
 
     func whiskyWineVersion(_ plist: URL) -> String? {

@@ -185,7 +185,9 @@ struct BottleRow: View {
 
     private var subtitle: String {
         if let engine = model.engine(for: bottle) { return engine.name }
-        return bottle.isCrossOverBottle ? "Needs CrossOver" : "No engine"
+        if bottle.isCrossOverBottle { return "Needs CrossOver" }
+        if bottle.engineID == InstalledRuntime.engineID, case .preparing = model.runtimeStatus { return "Setting up the built-in engine…" }
+        return "No engine"
     }
 }
 
@@ -199,7 +201,7 @@ struct WelcomeView: View {
                 .foregroundStyle(.tint)
             Text("Run Windows games and apps in bottles")
                 .font(.title2.weight(.semibold))
-            Text("A bottle is a self-contained Windows environment. Create one, install Steam into it, and play your Windows games, or add a bottle you already have from CrossOver or Whisky.")
+            Text("A bottle is a self-contained Windows environment. Create one, install Steam into it, and play your Windows games. SteamXBridge brings its own Windows engine, so nothing else needs to be installed.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 460)
@@ -207,6 +209,8 @@ struct WelcomeView: View {
                 EngineHelpView()
                     .frame(maxWidth: 520)
             } else {
+                RuntimeStatusView()
+                    .frame(maxWidth: 520)
                 Button("New Bottle…") { model.showingNewBottle = true }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -216,21 +220,68 @@ struct WelcomeView: View {
     }
 }
 
-/// Explains how to get a Wine engine when none is installed.
+/// The built-in engine's first-launch setup, or why it is unavailable.
+/// Shows nothing once it is ready.
+struct RuntimeStatusView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        switch model.runtimeStatus {
+        case .ready:
+            // macOS installs Rosetta on demand only for apps it opens itself,
+            // not for an engine SteamXBridge starts, so say how.
+            if model.builtInEngine?.needsRosetta == true, !Rosetta.isInstalled {
+                Label("The built-in engine needs Rosetta 2. Run \"\(Rosetta.installCommand)\" in Terminal, then start the game again.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        case .preparing(let message):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(message)
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+        case .failed(let reason):
+            VStack(alignment: .leading, spacing: 8) {
+                Label("The built-in engine could not be set up", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+                Text(reason)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Button("Try Again") { model.prepareRuntime() }
+            }
+        case .notBundled:
+            Label(RuntimeError.notBundled.errorDescription ?? "", systemImage: "info.circle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Shown when no engine can be used at all: the built-in one is unavailable
+/// and no other engine is installed.
 struct EngineHelpView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("No Wine engine found", systemImage: "exclamationmark.triangle.fill")
+            Label("No Windows engine available", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            Text("SteamXBridge drives a Wine engine that you install separately:")
+            RuntimeStatusView()
+            Text("SteamXBridge normally needs nothing else. It can also use these engines when they are installed:")
             VStack(alignment: .leading, spacing: 6) {
-                Text("• **CrossOver 26** (CodeWeavers, paid with a free trial): the most compatible engine, and the only one that runs HELLDIVERS 2.")
+                Text("• **CrossOver 26** (CodeWeavers, paid with a free trial): needed for HELLDIVERS 2 and other games whose anti-cheat only works with CodeWeavers' patches.")
                 Text("• **Game Porting Toolkit** (Apple's D3DMetal, via Gcenx's free build): `brew install --cask gcenx/wine/game-porting-toolkit`")
-                Text("• **Wine** (WineHQ builds by Gcenx): download Wine Stable from github.com/Gcenx/macOS_Wine_builds")
+                Text("• **Wine** (WineHQ builds by Gcenx): github.com/Gcenx/macOS_Wine_builds")
             }
             .font(.callout)
-            Text("Then choose Steam X Bridge > Settings… to rescan engines.")
+            Text("Engines are found automatically; Steam X Bridge > Settings… rescans them.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

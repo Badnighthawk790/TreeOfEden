@@ -145,6 +145,11 @@ struct ProgramsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                // Setup progress or a problem with the built-in engine, for the
+                // bottles that run on it (or would, once it is ready).
+                if !bottle.isCrossOverBottle, model.engine(for: bottle).map({ $0.kind == .builtIn }) ?? true {
+                    RuntimeStatusView()
+                }
                 ForEach(bottle.warnings(engine: model.engine(for: bottle)), id: \.self) { warning in
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)

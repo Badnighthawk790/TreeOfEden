@@ -12,6 +12,18 @@ final class LaunchPlannerTests: XCTestCase {
                    architectures: architectures, features: features)
     }
 
+    /// A layer folder like the runtime's DXMT or DXVK payload.
+    private func layerSource(_ tmp: TemporaryDirectory, _ name: String, _ dlls: [String]) throws -> String {
+        for dll in dlls { try tmp.file("\(name)/x64/\(dll)", contents: "MZ \(name) \(dll)") }
+        return tmp.url.appendingPathComponent(name).path
+    }
+
+    private func builtInEngine(dxmt: String?, dxvk: String?) -> WineEngine {
+        WineEngine(kind: .builtIn, name: "Built-in engine", version: "11.0", loaderPath: "/runtime/engine/Wine/bin/wine",
+                   wineserverPath: "/runtime/engine/Wine/bin/wineserver", bundlePath: nil, dxvkSourcePath: dxvk,
+                   architectures: [.x86_64], features: [.dxmt, .dxvk, .wineD3D], dxmtSourcePath: dxmt)
+    }
+
     private func crossOverEngine() -> WineEngine {
         WineEngine(kind: .crossOver, name: "CrossOver 26.3.0", version: "26.3.0",
                    loaderPath: "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine",
@@ -55,13 +67,62 @@ final class LaunchPlannerTests: XCTestCase {
         XCTAssertEqual(dxr(.off, m4), "0", "off really disables it on M3 and newer")
     }
 
-    func testDXVKOverridesOnlyWhenTheEngineCanSupplyDXVK() {
+    func testDXVKOverridesOnlyWhenTheEngineCanSupplyDXVK() throws {
+        let tmp = try TemporaryDirectory()
         var bottle = Bottle(name: "B", prefixPath: "/p")
         bottle.settings.graphics = .dxvk
-        let with = LaunchPlanner(bottle: bottle, engine: plainEngine(), gpu: m2, rosettaInstalled: true).plainEnvironment()
-        XCTAssertEqual(with["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;dxgi,d3d9,d3d10core,d3d11=n,b")
+        var engine = plainEngine()
+        engine.dxvkSourcePath = try layerSource(tmp, "DXVK", ["d3d10core.dll", "d3d11.dll"])
+        let with = LaunchPlanner(bottle: bottle, engine: engine, gpu: m2, rosettaInstalled: true).plainEnvironment()
+        XCTAssertEqual(with["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;d3d10core,d3d11=n,b",
+                       "only the DLLs DXVK-macOS ships are made native; dxgi stays Wine's")
         let without = LaunchPlanner(bottle: bottle, engine: plainEngine([.d3dMetal, .msync]), gpu: m2, rosettaInstalled: true).plainEnvironment()
         XCTAssertEqual(without["WINEDLLOVERRIDES"], "winemenubuilder.exe=d")
+        let noFiles = LaunchPlanner(bottle: bottle, engine: plainEngine(), gpu: m2, rosettaInstalled: true).plainEnvironment()
+        XCTAssertEqual(noFiles["WINEDLLOVERRIDES"], "winemenubuilder.exe=d", "no DXVK folder, nothing to load natively")
+    }
+
+    func testTheBuiltInEngineRunsDirect3D11OnDXMTWithMetalFX() throws {
+        let tmp = try TemporaryDirectory()
+        let engine = builtInEngine(dxmt: try layerSource(tmp, "DXMT", ["d3d11.dll", "dxgi.dll", "d3d10core.dll", "winemetal.dll"]),
+                                   dxvk: try layerSource(tmp, "DXVK", ["d3d10core.dll", "d3d11.dll"]))
+        XCTAssertEqual(engine.graphicsBackends, [.automatic, .dxvk, .wineD3D], "Automatic already is DXMT")
+        XCTAssertEqual(engine.automaticGraphicsDescription, "DXMT for Direct3D 10/11, WineD3D for older games")
+
+        var bottle = Bottle(name: "B", prefixPath: "/p")
+        func env() -> [String: String] {
+            LaunchPlanner(bottle: bottle, engine: engine, gpu: m2, rosettaInstalled: true).plainEnvironment()
+        }
+        XCTAssertEqual(env()["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;d3d10core,d3d11,dxgi=n,b;winemetal=b",
+                       "winemetal must stay builtin to reach Metal")
+        XCTAssertNil(env()["DXMT_METALFX_SPATIAL_SWAPCHAIN"])
+        XCTAssertNil(env()["WINEMSYNC"], "the built-in engine has no MSync")
+
+        bottle.settings.metalFXUpscaling = true
+        bottle.settings.metalFXScale = 3
+        bottle.settings.frameRateLimit = 40
+        XCTAssertEqual(env()["DXMT_METALFX_SPATIAL_SWAPCHAIN"], "1")
+        XCTAssertEqual(env()["DXMT_CONFIG"], "d3d11.metalSpatialUpscaleFactor=2.00;d3d11.preferredMaxFrameRate=40;",
+                       "the factor is clamped to DXMT's 1-2 range")
+
+        bottle.settings.graphics = .wineD3D
+        XCTAssertEqual(env()["WINEDLLOVERRIDES"], "winemenubuilder.exe=d")
+        XCTAssertNil(env()["DXMT_CONFIG"], "DXMT options only apply where DXMT runs")
+        bottle.settings.graphics = .dxvk
+        XCTAssertEqual(env()["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;d3d10core,d3d11=n,b")
+    }
+
+    func testCrossOverGetsDXMTOptionsOnlyWithDXMTSelected() throws {
+        var bottle = Bottle(name: "Steam", prefixPath: "/b/Steam")
+        bottle.settings.metalFXUpscaling = true
+        let planner = { LaunchPlanner(bottle: bottle, engine: self.crossOverEngine(), gpu: self.m2,
+                                      crossOverBottleDirectory: URL(fileURLWithPath: "/b"), rosettaInstalled: true) }
+        let game = URL(fileURLWithPath: "/b/Steam/drive_c/game.exe")
+        XCTAssertNil(try planner().invocation(for: .program(game, arguments: [], workingDirectory: nil))
+            .environment["DXMT_METALFX_SPATIAL_SWAPCHAIN"])
+        bottle.settings.graphics = .dxmt
+        XCTAssertEqual(try planner().invocation(for: .program(game, arguments: [], workingDirectory: nil))
+            .environment["DXMT_METALFX_SPATIAL_SWAPCHAIN"], "1")
     }
 
     func testCustomEnvironmentIsValidatedAndCannotRetargetThePrefix() {
@@ -210,12 +271,15 @@ final class LaunchPlannerTests: XCTestCase {
         XCTAssertFalse(try planner.invocation(for: .program(setup, arguments: [], workingDirectory: nil)).arguments.contains("--wait-children"))
     }
 
-    func testCustomDLLOverridesAreMergedNotReplaced() {
+    func testCustomDLLOverridesAreMergedNotReplaced() throws {
+        let tmp = try TemporaryDirectory()
         var bottle = Bottle(name: "B", prefixPath: "/p")
         bottle.settings.graphics = .dxvk
         bottle.settings.environment = [EnvironmentVariable(name: "WINEDLLOVERRIDES", value: "xinput1_3=n,b")]
-        let env = LaunchPlanner(bottle: bottle, engine: plainEngine(), gpu: m2, rosettaInstalled: true).plainEnvironment()
-        XCTAssertEqual(env["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;dxgi,d3d9,d3d10core,d3d11=n,b;xinput1_3=n,b")
+        var engine = plainEngine()
+        engine.dxvkSourcePath = try layerSource(tmp, "DXVK", ["d3d11.dll"])
+        let env = LaunchPlanner(bottle: bottle, engine: engine, gpu: m2, rosettaInstalled: true).plainEnvironment()
+        XCTAssertEqual(env["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;d3d11=n,b;xinput1_3=n,b")
     }
 
     func testESyncIsWrittenOnlyForCrossOverVersionsThatHaveIt() {

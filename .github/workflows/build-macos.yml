@@ -35,6 +35,11 @@ jobs:
       - name: Package .app bundle
         run: ./scripts/package_macos_app.sh
 
+      - name: Install the bundled runtime the way the app does
+        env:
+          SXB_RUNTIME_SOURCE: dist/SteamXBridge.app/Contents/Resources/Runtime
+        run: swift test --filter RuntimeInstallerTests/testInstallsTheRealRuntime
+
       - name: Upload app artifact
         uses: actions/upload-artifact@v7
         with:

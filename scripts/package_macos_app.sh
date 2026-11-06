@@ -9,6 +9,9 @@ CONFIGURATION="release"
 # packaging working with no arguments.
 APP_VERSION="${APP_VERSION:-2.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
+# The built-in Windows runtime (runtime/runtime.json) is bundled by default.
+# BUNDLE_RUNTIME=0 builds a small app that relies on engines installed on the Mac.
+BUNDLE_RUNTIME="${BUNDLE_RUNTIME:-1}"
 
 # Both end up in Info.plist; refuse anything that is not a plain version.
 if [[ ! "${APP_VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
@@ -52,6 +55,13 @@ chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 echo "APPL????" > "${CONTENTS_DIR}/PkgInfo"
 
+if [[ "${BUNDLE_RUNTIME}" == "1" ]]; then
+  # Downloads each pinned archive (or reuses the cache) and refuses any whose
+  # size or SHA-256 differs from runtime/runtime.json.
+  python3 -I "${ROOT_DIR}/scripts/stage_runtime.py" "${ROOT_DIR}" "${RESOURCES_DIR}" \
+    "${RUNTIME_CACHE:-${ROOT_DIR}/.build/runtime-cache}"
+fi
+
 cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -82,7 +92,7 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.games</string>
   <key>NSHumanReadableCopyright</key>
-  <string>SteamXBridge drives Wine engines you install separately; it bundles none.</string>
+  <string>Includes Wine and other open-source software; see THIRD_PARTY_NOTICES.md in the app's Resources.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Windows games and programs you run in a bottle can use the microphone, for example for Steam or in-game voice chat.</string>
   <key>NSCameraUsageDescription</key>
@@ -96,6 +106,10 @@ PLIST
 # "Open Anyway" step (see README). Signing failures are fatal.
 codesign --force --sign - --timestamp=none "${APP_DIR}"
 codesign --verify --strict --verbose=2 "${APP_DIR}"
+if [[ "${BUNDLE_RUNTIME}" == "1" ]]; then
+  test -f "${RESOURCES_DIR}/Runtime/runtime.json"
+  test -f "${RESOURCES_DIR}/THIRD_PARTY_NOTICES.md"
+fi
 # Wine children are attributed to this app for privacy checks; without these
 # strings macOS kills a game the moment it opens the microphone.
 plutil -extract NSMicrophoneUsageDescription raw "${CONTENTS_DIR}/Info.plist" >/dev/null

@@ -1,0 +1,27 @@
+{
+  "id": "wine-11.0-dxmt-0.80-dxvk-1.10.3-r1",
+  "displayName": "Built-in engine (Wine 11.0)",
+  "wineVersion": "11.0",
+  "components": [
+    {
+      "name": "Wine 11.0 with DXMT 0.80 and DXVK 1.10.3",
+      "version": "3.1.1",
+      "archive": "wine-runtime-3.1.1.tar.gz",
+      "sha256": "01f3a1b43b98065fe20c529c1023b61dd79a6d2ad93bba6040865f646481ccf3",
+      "size": 332438526,
+      "destination": "engine",
+      "stripComponents": 1,
+      "member": "Libraries",
+      "license": "LGPL-2.1-or-later (Wine); MIT (DXMT 0.80); Zlib (DXVK-macOS); others listed in THIRD_PARTY_NOTICES.md",
+      "url": "https://github.com/frankea/Whisky/releases/download/v3.1.1/Libraries.tar.gz",
+      "sourceURL": "https://github.com/frankea/Whisky/releases/tag/v3.1.1"
+    }
+  ],
+  "copies": [],
+  "loaderPath": "engine/Wine/bin/wine",
+  "wineserverPath": "engine/Wine/bin/wineserver",
+  "dxmtPath": "engine/DXMT",
+  "dxvkPath": "engine/DXVK",
+  "features": ["dxmt", "dxvk", "wineD3D"],
+  "needsRosetta": true
+}

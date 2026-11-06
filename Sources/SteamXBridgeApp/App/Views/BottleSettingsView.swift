@@ -181,8 +181,33 @@ struct BottleSettingsView: View {
             Text(draft.settings.graphics.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if draft.settings.graphics == .dxvk, !engine.isCrossOver {
-                Text("DXVK's files are copied into the bottle the next time a program starts.")
+            if let layer = engine.layer(for: draft.settings.graphics)?.layer {
+                Text("\(layer == .dxmt ? "DXMT" : "DXVK")'s files are copied into the bottle the next time a program starts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if runsDXMT(engine) {
+                Toggle("MetalFX upscaling", isOn: draftBinding.settings.metalFXUpscaling)
+                if draft.settings.metalFXUpscaling {
+                    LabeledContent("Upscale factor") {
+                        HStack {
+                            Slider(value: draftBinding.settings.metalFXScale, in: 1.0...2.0, step: 0.25)
+                                .frame(maxWidth: 200)
+                            Text(String(format: "%.2f×", draft.settings.metalFXScale))
+                                .monospacedDigit()
+                                .frame(width: 48, alignment: .trailing)
+                        }
+                    }
+                }
+                Text("Set the game to a lower resolution; MetalFX enlarges every frame to fit the window. 1.5× turns 1280×800 into 1920×1200.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Frame rate limit", selection: draftBinding.settings.frameRateLimit) {
+                    Text("Off").tag(0)
+                    ForEach([30, 40, 45, 60], id: \.self) { Text("\($0) fps").tag($0) }
+                }
+                Text("A steady cap keeps a fanless MacBook Air cooler, so it holds its speed for longer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -212,6 +237,11 @@ struct BottleSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// True when the draft's renderer is DXMT, whose own upscaler and frame cap apply.
+    private func runsDXMT(_ engine: WineEngine) -> Bool {
+        engine.isCrossOver ? draft.settings.graphics == .dxmt : engine.layer(for: draft.settings.graphics)?.layer == .dxmt
     }
 
     private func performanceSection(_ engine: WineEngine) -> some View {
