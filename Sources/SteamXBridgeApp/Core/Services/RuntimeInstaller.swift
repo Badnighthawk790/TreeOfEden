@@ -140,7 +140,7 @@ struct RuntimeInstaller {
                 throw RuntimeError.incomplete(manifest.loaderPath)
             }
             progress("Finishing…")
-            // The archives were verified above; their contents inherit the
+            // The archives were verified above. Files can inherit the
             // download's quarantine flag, which would stop Wine from starting.
             Self.removeQuarantine(under: staging)
             let marker = try JSONEncoder().encode(manifest)
@@ -195,11 +195,14 @@ struct RuntimeInstaller {
         #endif
     }
 
-    /// Staging folders of an install that never finished.
+    /// Staging folders of an install that never finished. Recent ones are
+    /// left alone: another copy of the app may be installing right now.
     private func removeLeftovers() {
-        let items = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        let items = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let cutoff = Date().addingTimeInterval(-3600)
         for item in items where item.lastPathComponent.hasPrefix(".staging-") || item.lastPathComponent.hasPrefix(".old-") {
-            try? FileManager.default.removeItem(at: item)
+            let modified = (try? item.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            if item.lastPathComponent.hasPrefix(".old-") || modified < cutoff { try? FileManager.default.removeItem(at: item) }
         }
     }
 

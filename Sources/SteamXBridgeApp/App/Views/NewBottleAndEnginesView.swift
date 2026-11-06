@@ -54,7 +54,7 @@ struct NewBottleSheet: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if !engine.isCrossOver, installSteam, steamSupported {
-                        Text("Steam's window may stay black on this engine (a known Wine problem with Steam's web view). CrossOver is the dependable engine for Steam.")
+                        Text("Steam's window may stay black on this engine (a known Wine problem with Steam's web view). If it does, turn on Steam compatibility switches in the bottle's Settings.")
                             .font(.callout)
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)

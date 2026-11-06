@@ -247,7 +247,7 @@ struct ProgramsView: View {
                             .foregroundStyle(.secondary)
                     }
                     if let engine = model.engine(for: bottle), !engine.isCrossOver {
-                        Text("On \(engine.name), Steam's window may stay black (a known Wine problem with Steam's web view). If it does, CrossOver is the dependable engine for Steam.")
+                        Text("On \(engine.name), Steam's window may stay black (a known Wine problem with Steam's web view). If it does, turn on Steam compatibility switches in Settings; CrossOver is the dependable engine for Steam.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

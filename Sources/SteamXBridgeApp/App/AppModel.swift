@@ -106,6 +106,8 @@ final class AppModel: ObservableObject {
     let store = BottleStore()
     let crossOverBottleDirectory: URL
 
+    private var isPreparingRuntime = false
+
     private static let selectionKey = "selectedBottle"
     private static let customEnginesKey = "customEngines"
 
@@ -231,9 +233,12 @@ final class AppModel: ObservableObject {
     /// Installs the bundled runtime on first launch (and after an app update
     /// that ships a new one); later launches find it installed at once.
     func prepareRuntime() {
+        guard !isPreparingRuntime else { return } // one install at a time
+        isPreparingRuntime = true
         let installer = RuntimeInstaller(source: RuntimeInstaller.bundledSource())
         runtimeStatus = .preparing("Checking the built-in engine…")
         Task {
+            defer { isPreparingRuntime = false }
             let result = await Task.detached(priority: .userInitiated) { () -> Result<InstalledRuntime, Error> in
                 Result {
                     try installer.prepare { message in
@@ -297,19 +302,19 @@ final class AppModel: ObservableObject {
     /// The bottle's engine, or an explanatory alert when there is none.
     private func requireEngine(for bottle: Bottle) -> WineEngine? {
         if let engine = engine(for: bottle) { return engine }
-        let message: String
-        if bottle.isCrossOverBottle {
-            message = "This is a CrossOver bottle. Install CrossOver to run it."
-        } else {
-            switch runtimeStatus {
-            case .preparing: message = "The built-in engine is still being set up. Try again in a moment."
-            case .failed(let reason): message = "The built-in engine could not be set up: \(reason)"
-            case .notBundled: message = RuntimeError.notBundled.errorDescription ?? ""
-            case .ready: message = "Choose an engine in the bottle's Settings."
-            }
-        }
-        alert = AppAlert(title: "No engine for \(bottle.name)", message: message)
+        alert = AppAlert(title: "No engine for \(bottle.name)", message: noEngineReason(for: bottle))
         return nil
+    }
+
+    /// Why a bottle has no engine right now, and what to do about it.
+    private func noEngineReason(for bottle: Bottle) -> String {
+        if bottle.isCrossOverBottle { return "This is a CrossOver bottle. Install CrossOver to run it." }
+        switch runtimeStatus {
+        case .preparing: return "The built-in engine is still being set up. Try again in a moment."
+        case .failed(let reason): return "The built-in engine could not be set up: \(reason)"
+        case .notBundled: return RuntimeError.notBundled.errorDescription ?? ""
+        case .ready: return "Choose an engine in the bottle's Settings."
+        }
     }
 
     // MARK: Bottles
@@ -364,7 +369,10 @@ final class AppModel: ObservableObject {
 
     private func preferredEngine(for external: ExternalBottle) -> WineEngine? {
         let ordered = Self.ordered(engines)
-        let anyPlain = ordered.first { !$0.isCrossOver }
+        // A prefix made by another Wine stays on an installed engine of that
+        // kind when there is one: the built-in engine would upgrade it to its
+        // own Wine version, which its original engine may not open again.
+        let anyPlain = ordered.first { !$0.isCrossOver && $0.kind != .builtIn } ?? ordered.first { $0.kind == .builtIn }
         switch external.source {
         case ExternalBottleFinder.crossOverSource:
             return ordered.first(where: \.isCrossOver)
@@ -433,8 +441,7 @@ final class AppModel: ObservableObject {
             // Nothing would apply them later, so they are not saved as applied.
             keepUnapplied(updated)
             alert = AppAlert(title: "No engine to apply these settings",
-                             message: (updated.isCrossOverBottle ? "Install CrossOver" : "Install a Wine engine")
-                                + " to apply them. Your changes stay in the Settings tab until then.")
+                             message: noEngineReason(for: updated) + " Your changes stay in the Settings tab until then.")
             return
         }
         guard persist(updated) else { keepUnapplied(updated); return }

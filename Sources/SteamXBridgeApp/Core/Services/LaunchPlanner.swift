@@ -212,10 +212,11 @@ struct LaunchPlanner {
         }
     }
 
-    /// Opt-in Steam switches that help the client's web UI on plain WineHQ
-    /// builds (it can still render black there; an open upstream bug).
+    /// Opt-in Steam switches that help the client's web UI on plain Wine
+    /// engines (it can still render black there; an open upstream bug).
+    /// -cef-disable-gpu keeps the web view off Direct3D, and so off DXMT/DXVK.
     /// CrossOver handles Steam itself and gets no extra flags.
-    static let steamCompatibilityArguments = ["-noverifyfiles", "-no-cef-sandbox", "-cef-single-process"]
+    static let steamCompatibilityArguments = ["-noverifyfiles", "-no-cef-sandbox", "-cef-disable-gpu", "-cef-single-process"]
 
     var steamClientArguments: [String] {
         bottle.settings.steamCompatibilityFlags && !engine.isCrossOver ? Self.steamCompatibilityArguments : []

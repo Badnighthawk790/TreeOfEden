@@ -35,8 +35,15 @@ struct BottleSettingsView: View {
                 Section("Bottle") {
                     TextField("Name", text: draftBinding.name)
                     if engines.isEmpty {
-                        Text(bottle.isCrossOverBottle ? "Install CrossOver to run this CrossOver bottle." : "No compatible engine is installed.")
-                            .foregroundStyle(.orange)
+                        if bottle.isCrossOverBottle {
+                            Text("Install CrossOver to run this CrossOver bottle.")
+                                .foregroundStyle(.orange)
+                        } else if model.runtimeStatus == .ready {
+                            Text("No compatible engine is installed.")
+                                .foregroundStyle(.orange)
+                        } else {
+                            RuntimeStatusView()
+                        }
                     } else {
                         Picker("Engine", selection: Binding(
                             get: { engine?.id ?? "" },
@@ -254,7 +261,7 @@ struct BottleSettingsView: View {
             }
             if !engine.isCrossOver {
                 Toggle("Steam compatibility switches", isOn: draftBinding.settings.steamCompatibilityFlags)
-                Text("Starts Steam with -noverifyfiles -no-cef-sandbox -cef-single-process. Can help Steam's window on WineHQ builds, where it may still appear black (an open Wine bug); CrossOver handles Steam itself.")
+                Text("Starts Steam with \(LaunchPlanner.steamCompatibilityArguments.joined(separator: " ")). Try it when Steam's window stays black on this engine (an open Wine bug); CrossOver handles Steam itself.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
