@@ -30,6 +30,13 @@ final class EngineSmokeTests: XCTestCase {
                                                      settings: BottleSettings())
         print(String(format: "smoke: bottle created in %.0f s", Date().timeIntervalSince(started)))
         XCTAssertTrue(bottle.isInitialized)
+        // The engine's own start-up messages (wineserver reports MSync here).
+        let creation = store.logs(for: bottle).first { $0.lastPathComponent.contains("create-bottle") }
+        let creationLog = creation.map { ProcessRunner.readTail(of: $0, maxBytes: 8 * 1024) } ?? ""
+        print("smoke: create-bottle log\n\(creationLog)")
+        if engine.supports(.msync) {
+            XCTAssertTrue(creationLog.contains("msync: up and running"), "wineserver started with MSync")
+        }
 
         // 2. A console program.
         let ver = try await ops.runner.run(try ops.planner(for: bottle, engine: engine)

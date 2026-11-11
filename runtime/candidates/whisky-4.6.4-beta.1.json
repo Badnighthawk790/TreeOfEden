@@ -1,0 +1,27 @@
+{
+  "id": "wine-11.16-msync-dxmt-0.80-lab",
+  "displayName": "Built-in engine (Wine 11.16, MSync)",
+  "wineVersion": "11.16",
+  "components": [
+    {
+      "name": "Wine 11.16 with MSync, DXMT 0.80 and DXVK 1.10.3",
+      "version": "4.6.4-beta.1",
+      "archive": "wine-runtime-4.6.4-beta.1.tar.gz",
+      "sha256": "c8e6a10dfeb54fc16d3dd3382ee2e9d2cec3eb1f5641613cad8b07903818cb12",
+      "size": 481348675,
+      "destination": "engine",
+      "stripComponents": 1,
+      "member": "Libraries",
+      "license": "LGPL-2.1-or-later (Wine); MIT (DXMT 0.80); Zlib (DXVK-macOS); others",
+      "url": "https://github.com/frankea/Whisky/releases/download/v4.6.4-beta.1/Libraries.tar.gz",
+      "sourceURL": "https://github.com/frankea/Whisky/releases/tag/v4.6.4-beta.1"
+    }
+  ],
+  "copies": [],
+  "loaderPath": "engine/Wine/bin/wine",
+  "wineserverPath": "engine/Wine/bin/wineserver",
+  "dxmtPath": "engine/DXMT",
+  "dxvkPath": "engine/DXVK",
+  "features": ["dxmt", "dxvk", "wineD3D", "msync"],
+  "needsRosetta": true
+}

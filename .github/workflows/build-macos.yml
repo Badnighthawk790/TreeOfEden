@@ -75,6 +75,43 @@ jobs:
       - name: Engine smoke test (Wine under Rosetta, Direct3D 11 on each layer)
         env:
           SXB_ENGINE_SMOKE: "1"
+          SXB_REQUIRE_RENDERING: "1" # DXMT must render a frame, even on the runner's virtual GPU
           SXB_RUNTIME_SOURCE: dist/SteamXBridge.app/Contents/Resources/Runtime
           SXB_D3D11_PROBE: ${{ runner.temp }}/d3d11probe.exe
         run: swift test --filter EngineSmokeTests
+
+  # Tries candidate engines (runtime/candidates/*.json) with the same smoke
+  # test, without shipping them. It never fails the build.
+  engine-lab:
+    runs-on: macos-26
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Find candidates
+        id: candidates
+        run: |
+          if compgen -G "runtime/candidates/*.json" >/dev/null; then echo "any=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Build the probe and the tests
+        if: steps.candidates.outputs.any == 'true'
+        run: |
+          brew install mingw-w64
+          x86_64-w64-mingw32-gcc -O2 -Wall -o "$RUNNER_TEMP/d3d11probe.exe" \
+            Tests/EngineSmoke/d3d11probe.c -ld3d11 -ldxgi -ldxguid -luuid
+          swift build --build-tests
+
+      - name: Smoke-test each candidate
+        if: steps.candidates.outputs.any == 'true'
+        run: |
+          status=0
+          for manifest in runtime/candidates/*.json; do
+            name="$(basename "$manifest" .json)"
+            echo "::group::$name"
+            python3 -I scripts/stage_runtime.py "$PWD" "$RUNNER_TEMP/lab/$name" "$RUNNER_TEMP/lab-cache" "$manifest"
+            SXB_ENGINE_SMOKE=1 SXB_REQUIRE_RENDERING=1 SXB_RUNTIME_SOURCE="$RUNNER_TEMP/lab/$name/Runtime" \
+              SXB_D3D11_PROBE="$RUNNER_TEMP/d3d11probe.exe" swift test --skip-build --filter EngineSmokeTests || status=1
+            echo "::endgroup::"
+          done
+          exit $status

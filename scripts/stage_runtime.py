@@ -7,7 +7,10 @@ refuses any archive whose size or SHA-256 differs from the manifest, and
 copies the archives, the manifest and the license notices into
 <Resources>/Runtime. Nothing downloaded is executed or unpacked here.
 
-Usage: stage_runtime.py <repo root> <app Resources folder> <cache folder>
+Usage: stage_runtime.py <repo root> <app Resources folder> <cache folder> [manifest]
+
+The optional manifest (default: runtime/runtime.json) is for trying a
+candidate engine in CI without shipping it.
 """
 import hashlib
 import json
@@ -56,10 +59,11 @@ def fetch(component, cache):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         sys.exit(__doc__)
-    root, resources, cache = sys.argv[1:]
-    with open(os.path.join(root, "runtime", "runtime.json")) as handle:
+    root, resources, cache = sys.argv[1:4]
+    manifest_path = sys.argv[4] if len(sys.argv) == 5 else os.path.join(root, "runtime", "runtime.json")
+    with open(manifest_path) as handle:
         manifest = json.load(handle)
     os.makedirs(cache, exist_ok=True)
     output = os.path.join(resources, "Runtime")
@@ -67,7 +71,7 @@ def main():
     os.makedirs(output)
     for component in manifest["components"]:
         shutil.copy2(fetch(component, cache), os.path.join(output, component["archive"]))
-    shutil.copy2(os.path.join(root, "runtime", "runtime.json"), os.path.join(output, "runtime.json"))
+    shutil.copy2(manifest_path, os.path.join(output, "runtime.json"))
     # License texts and notices for everything in the runtime.
     shutil.copy2(os.path.join(root, "runtime", "THIRD_PARTY_NOTICES.md"), os.path.join(resources, "THIRD_PARTY_NOTICES.md"))
     licenses = os.path.join(root, "runtime", "licenses")

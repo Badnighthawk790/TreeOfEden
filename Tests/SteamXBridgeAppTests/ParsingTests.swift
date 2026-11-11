@@ -136,6 +136,35 @@ final class GPUStackTests: XCTestCase {
         }
     }
 
+    func testASeriesMacsAreEntryLevelWithRayTracing() {
+        let neo = GPUStack.parse(brand: "Apple A18 Pro")
+        XCTAssertEqual(neo.family, .a)
+        XCTAssertEqual(neo.generation, 18)
+        XCTAssertEqual(neo.tier, "Pro")
+        XCTAssertTrue(neo.isEntryLevel, "5 GPU cores, 2 performance cores, 8 GB")
+        XCTAssertTrue(neo.hasHardwareRayTracing, "A17 Pro and newer")
+        XCTAssertTrue(neo.hasHardwareMeshShading)
+        XCTAssertFalse(neo.hasDynamicCaching, "only documented for M3 and newer")
+        XCTAssertTrue(neo.supportsMetalFX)
+        XCTAssertEqual(neo.classLabel, "Entry-level GPU (hardware ray tracing)")
+        XCTAssertTrue(GPUStack.parse(brand: "Apple A19 Pro").hasHardwareRayTracing)
+        XCTAssertFalse(GPUStack.parse(brand: "Apple A16").hasHardwareRayTracing)
+        XCTAssertNil(GPUStack.parse(brand: "Apple Ax").generation)
+    }
+
+    func testEntryLevelMeansBaseM1M2AndASeries() {
+        for brand in ["Apple M1", "Apple M2", "Apple A18 Pro", "Apple M1 (Virtual)"] {
+            XCTAssertTrue(GPUStack.parse(brand: brand).isEntryLevel, brand)
+        }
+        for brand in ["Apple M1 Pro", "Apple M2 Max", "Apple M3", "Apple M4", "Apple M5 Pro", "", "Intel(R) Core(TM) i9-9880H"] {
+            XCTAssertFalse(GPUStack.parse(brand: brand).isEntryLevel, brand)
+        }
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M2 Pro").tier, "Pro")
+        XCTAssertNil(GPUStack.parse(brand: "Apple M1 (Virtual)").tier)
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M1").classLabel, "Entry-level GPU (no hardware ray tracing)")
+        XCTAssertEqual(GPUStack.parse(brand: "Apple M2 Pro").classLabel, "M1/M2-class GPU (no hardware ray tracing)")
+    }
+
     func testVirtualMachinesDoNotClaimHardwareFeatures() {
         let vm = GPUStack.parse(brand: "Apple M3 (Virtual)")
         XCTAssertEqual(vm.generation, 3)
@@ -150,6 +179,92 @@ final class GPUStackTests: XCTestCase {
         XCTAssertEqual(rt?.isAvailable, false)
         let unknown = GPUStack.parse(brand: "")
         XCTAssertTrue(unknown.featureStatuses.allSatisfy { !$0.isAvailable })
+    }
+}
+
+final class PerformanceTuningTests: XCTestCase {
+    private func engine(_ kind: EngineKind = .builtIn, dxmt: Bool = true) throws -> (WineEngine, TemporaryDirectory) {
+        let tmp = try TemporaryDirectory()
+        try tmp.file("DXMT/x64/d3d11.dll", contents: "MZ")
+        let engine = WineEngine(kind: kind, name: "Engine", version: "11.0", loaderPath: "/e/Wine/bin/wine", wineserverPath: nil,
+                                bundlePath: nil, dxvkSourcePath: nil, architectures: [.x86_64],
+                                features: dxmt ? [.dxmt, .wineD3D] : [.wineD3D],
+                                dxmtSourcePath: dxmt ? tmp.url.appendingPathComponent("DXMT").path : nil)
+        return (engine, tmp)
+    }
+
+    private func system(_ brand: String, memoryGB: UInt64 = 8, performanceCores: Int? = 4) -> SystemProfile {
+        SystemProfile(gpu: .parse(brand: brand), memoryBytes: memoryGB << 30, performanceCores: performanceCores, efficiencyCores: 4)
+    }
+
+    func testFrameRateChoicesDivideTheRefreshRate() {
+        XCTAssertEqual(FrameRateCap.choices(refreshRate: 60), [30, 60], "40 or 45 fps cannot be paced on a 60 Hz panel")
+        XCTAssertEqual(FrameRateCap.choices(refreshRate: 120), [24, 30, 40, 60, 120])
+        XCTAssertEqual(FrameRateCap.choices(refreshRate: 144), [24, 36, 48, 72, 144])
+        XCTAssertEqual(FrameRateCap.choices(refreshRate: 0), [])
+        XCTAssertEqual(FrameRateCap.effectiveRate(limit: 40, refreshRate: 60), 30, "what DXMT's limiter really delivers")
+        XCTAssertEqual(FrameRateCap.effectiveRate(limit: 60, refreshRate: 60), 60)
+        XCTAssertEqual(FrameRateCap.effectiveRate(limit: 0, refreshRate: 60), 0)
+    }
+
+    func testOptimizedSettingsForAnEntryLevelMac() throws {
+        let (builtIn, tmp) = try engine()
+        _ = tmp
+        var settings = BottleSettings()
+        settings.highResolutionMode = true
+        settings.debugLogging = true
+        let retina = PerformanceTuning.optimized(settings, engine: builtIn, display: DisplayProfile(refreshRate: 60, scale: 2))
+        XCTAssertTrue(retina.metalFXUpscaling)
+        XCTAssertEqual(retina.metalFXScale, 2.0, "2x matches a Retina display pixel for pixel")
+        XCTAssertEqual(retina.frameRateLimit, 60, "the display's refresh rate")
+        XCTAssertFalse(retina.highResolutionMode)
+        XCTAssertFalse(retina.debugLogging)
+
+        // On a 1x external monitor a 2x upscale would only be shrunk again.
+        let external = PerformanceTuning.optimized(settings, engine: builtIn, display: DisplayProfile(refreshRate: 144, scale: 1))
+        XCTAssertFalse(external.metalFXUpscaling)
+        XCTAssertEqual(external.frameRateLimit, 144)
+
+        // Where DXMT does not run, its options are left alone.
+        settings.graphics = .wineD3D
+        let wined3d = PerformanceTuning.optimized(settings, engine: builtIn, display: DisplayProfile())
+        XCTAssertFalse(wined3d.metalFXUpscaling)
+        XCTAssertEqual(wined3d.frameRateLimit, 0)
+        XCTAssertFalse(wined3d.highResolutionMode)
+    }
+
+    func testNotesWarnAboutWhatSlowsGamesNow() throws {
+        let (builtIn, tmp) = try engine()
+        _ = tmp
+        var settings = PerformanceTuning.optimized(BottleSettings(), engine: builtIn, display: DisplayProfile())
+        func ids(_ system: SystemProfile, _ conditions: SystemConditions = SystemConditions()) -> [String] {
+            PerformanceTuning.notes(system: system, conditions: conditions, settings: settings, engine: builtIn,
+                                    display: DisplayProfile()).map(\.id)
+        }
+        // A tuned bottle on a roomy Mac has nothing to say.
+        XCTAssertEqual(ids(system("Apple M4 Pro", memoryGB: 24)), [])
+        // The MacBook Neo: 8 GB and two performance cores.
+        XCTAssertEqual(ids(system("Apple A18 Pro", performanceCores: 2)), ["memory", "cores"])
+        XCTAssertEqual(ids(system("Apple M1")), ["memory"])
+        XCTAssertEqual(ids(system("Apple M4 Pro", memoryGB: 24), SystemConditions(lowPowerMode: true, thermal: .serious)),
+                       ["low-power", "thermal"])
+        XCTAssertEqual(ids(system("Apple M4 Pro", memoryGB: 24), SystemConditions(thermal: .fair)), [], "warm is normal")
+
+        settings = BottleSettings()
+        settings.highResolutionMode = true
+        settings.debugLogging = true
+        XCTAssertEqual(ids(system("Apple M1")), ["logging", "retina", "metalfx", "frame-limit", "memory"])
+        XCTAssertEqual(ids(system("Apple M4 Pro", memoryGB: 24)), ["logging"], "High Resolution Mode is fine on a fast GPU")
+        let warnings = PerformanceTuning.notes(system: system("Apple M1"), conditions: SystemConditions(), settings: settings,
+                                               engine: builtIn, display: DisplayProfile()).filter { $0.kind == .warning }
+        XCTAssertEqual(warnings.map(\.id), ["logging", "retina"])
+    }
+
+    func testSystemSummary() {
+        XCTAssertEqual(system("Apple A18 Pro", performanceCores: 2).summary, "8 GB · 2 performance + 4 efficiency cores")
+        XCTAssertTrue(system("Apple M1").isMemoryConstrained)
+        XCTAssertFalse(system("Apple M1", memoryGB: 16).isMemoryConstrained)
+        XCTAssertFalse(SystemProfile(gpu: .parse(brand: ""), memoryBytes: 0, performanceCores: nil, efficiencyCores: nil).isMemoryConstrained)
     }
 }
 
