@@ -228,15 +228,8 @@ struct RuntimeStatusView: View {
     var body: some View {
         switch model.runtimeStatus {
         case .ready:
-            // macOS installs Rosetta on demand only for apps it opens itself,
-            // not for an engine SteamXBridge starts, so say how.
-            if model.builtInEngine?.needsRosetta == true, !Rosetta.isInstalled {
-                Label("The built-in engine needs Rosetta 2. Run \"\(Rosetta.installCommand)\" in Terminal, then start the game again.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+            if model.builtInEngine?.needsRosetta == true, !model.rosettaInstalled {
+                RosettaNotice()
             }
         case .preparing(let message):
             HStack(spacing: 8) {
@@ -261,6 +254,31 @@ struct RuntimeStatusView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Shown when an engine needs Rosetta 2 and this Mac does not have it yet.
+/// macOS offers Rosetta by itself only for apps opened from Finder, not for
+/// an engine SteamXBridge starts, so the app installs it on request.
+struct RosettaNotice: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("The Windows engine needs Rosetta 2, Apple's translator for Intel software. It is a free download from Apple and installs in a minute or two.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Install Rosetta 2") { model.installRosetta() }
+                    .disabled(model.globalActivity != nil)
+                Text("or run \"\(Rosetta.installCommand)\" in Terminal")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
         }
     }
 }

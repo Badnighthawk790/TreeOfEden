@@ -150,6 +150,12 @@ struct ProgramsView: View {
                 if !bottle.isCrossOverBottle, model.engine(for: bottle).map({ $0.kind == .builtIn }) ?? true {
                     RuntimeStatusView()
                 }
+                // What is slowing games down right now (Low Power Mode, heat, logging).
+                ForEach(model.performanceNotes(for: bottle).filter { $0.kind == .warning }) { note in
+                    Label("\(note.title). \(note.detail)", systemImage: "tortoise.fill")
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(bottle.warnings(engine: model.engine(for: bottle)), id: \.self) { warning in
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)

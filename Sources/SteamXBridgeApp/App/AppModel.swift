@@ -102,7 +102,15 @@ final class AppModel: ObservableObject {
     /// Set to present the "Run Command…" file picker for a bottle.
     @Published var runCommandBottleID: UUID?
 
-    let gpu = GPUStack.detect()
+    /// This Mac's chip, memory and core counts.
+    let system = SystemProfile.detect()
+    var gpu: GPUStack { system.gpu }
+    /// Rosetta 2 runs the engines, which are Intel programs. A new Mac does
+    /// not have it until something installs it.
+    @Published private(set) var rosettaInstalled = Rosetta.isInstalled
+    /// Low Power Mode and heat. Updated when macOS reports a change; nothing polls.
+    @Published private(set) var conditions = SystemConditions()
+    private var conditionObservers: [NSObjectProtocol] = []
     let store = BottleStore()
     let crossOverBottleDirectory: URL
 
@@ -116,6 +124,47 @@ final class AppModel: ObservableObject {
         customEngines = Self.loadCustomEngines()
         reload()
         prepareRuntime()
+        observeSystemConditions()
+    }
+
+    // MARK: This Mac
+
+    private func observeSystemConditions() {
+        conditions = Self.currentConditions()
+        let names = [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification]
+        for name in names {
+            conditionObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.conditions = Self.currentConditions() }
+            })
+        }
+    }
+
+    private static func currentConditions() -> SystemConditions {
+        let info = ProcessInfo.processInfo
+        let thermal: SystemConditions.Thermal
+        switch info.thermalState {
+        case .nominal: thermal = .nominal
+        case .fair: thermal = .fair
+        case .serious: thermal = .serious
+        case .critical: thermal = .critical
+        @unknown default: thermal = .nominal
+        }
+        return SystemConditions(lowPowerMode: info.isLowPowerModeEnabled, thermal: thermal)
+    }
+
+    /// The main display, read when needed: it changes when a monitor is
+    /// plugged in or the window moves.
+    var display: DisplayProfile {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return DisplayProfile() }
+        let refresh = screen.maximumFramesPerSecond
+        return DisplayProfile(refreshRate: refresh >= 24 ? refresh : 60, scale: Double(screen.backingScaleFactor),
+                              width: Int(screen.frame.width), height: Int(screen.frame.height))
+    }
+
+    /// What is slowing this bottle down right now, and what would help.
+    func performanceNotes(for bottle: Bottle, settings: BottleSettings? = nil) -> [PerformanceNote] {
+        PerformanceTuning.notes(system: system, conditions: conditions, settings: settings ?? bottle.settings,
+                                engine: engine(for: bottle), display: display)
     }
 
     private var operations: BottleOperations {
@@ -260,6 +309,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Installs Rosetta 2 with Apple's own tool. It shows no window of its
+    /// own and takes a minute or two.
+    func installRosetta() {
+        let runner = ProcessRunner()
+        perform("Installing Rosetta 2", on: nil) {
+            let result = try await runner.run(Rosetta.installInvocation, timeout: 900)
+            self.rosettaInstalled = Rosetta.isInstalled
+            guard self.rosettaInstalled else {
+                throw LaunchPlanError.rosettaInstallFailed(Rosetta.installerMessage(from: result.output))
+            }
+        }
+    }
+
     // MARK: Running work
 
     /// Runs `work`, showing `title` as the bottle's (or the app's) activity and
@@ -319,17 +381,19 @@ final class AppModel: ObservableObject {
 
     // MARK: Bottles
 
-    func createBottle(named name: String, engine: WineEngine, windowsVersion: WindowsVersion, installSteam: Bool) {
+    func createBottle(named name: String, engine: WineEngine, windowsVersion: WindowsVersion, installSteam: Bool,
+                      optimize: Bool = false) {
         let ops = operations
         let existing = bottles
+        let settings = optimize ? PerformanceTuning.optimized(BottleSettings(), engine: engine, display: display) : BottleSettings()
         // Steam's client needs Windows 10 or later.
         let wantsSteam = installSteam && (windowsVersion == .win10 || windowsVersion == .win11)
         perform("Creating \(name)", on: nil) {
             let bottle = engine.isCrossOver
                 ? try await ops.createCrossOverBottle(named: name, engine: engine, windowsVersion: windowsVersion,
-                                                      settings: BottleSettings(), existing: existing)
+                                                      settings: settings, existing: existing)
                 : try await ops.createPlainBottle(named: name, engine: engine, windowsVersion: windowsVersion,
-                                                  settings: BottleSettings())
+                                                  settings: settings)
             self.insert(bottle)
             if wantsSteam { self.installSteam(in: bottle.id) }
         }
@@ -657,6 +721,10 @@ final class AppModel: ObservableObject {
                                    logURL: running.logURL, wineLogURL: running.wineLogURL)
             if case .steamGame = target { record.launchedThroughSteam = true }
             runs.append(record)
+            // Old run logs go now that the new one exists; never one still being written.
+            let store = self.store
+            let inUse = Set(runs.filter(\.isRunning).flatMap { [$0.logURL] + [$0.wineLogURL].compactMap { $0 } })
+            Task.detached(priority: .utility) { _ = store.pruneLogs(for: bottle, protected: inUse) }
         } catch {
             alert = AppAlert(title: "Could not start \(target.displayName)", message: error.localizedDescription)
         }

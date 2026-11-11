@@ -71,6 +71,7 @@ enum LaunchTarget: Equatable {
 
 enum LaunchPlanError: LocalizedError, Equatable {
     case rosettaMissing
+    case rosettaInstallFailed(String)
     case crossOverBottleOutsideLibrary(String)
     case crossOverBottleNeedsCrossOver
     case unsupportedFile(String)
@@ -78,7 +79,10 @@ enum LaunchPlanError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .rosettaMissing:
-            return "This engine needs Rosetta 2. Install it by running \"\(Rosetta.installCommand)\" in Terminal."
+            return "This engine needs Rosetta 2, Apple's translator for Intel software. Click Install Rosetta 2 on the bottle's Programs tab, or run \"\(Rosetta.installCommand)\" in Terminal."
+        case .rosettaInstallFailed(let output):
+            return "macOS did not install Rosetta 2. Check the internet connection and try again, or run \"\(Rosetta.installCommand)\" in Terminal."
+                + (output.isEmpty ? "" : "\n\n\(output)")
         case .crossOverBottleOutsideLibrary(let folder):
             return "CrossOver can only run bottles in its Bottles folder (\(folder)). Move this bottle into that folder (or import it in CrossOver), then add it again from there."
         case .crossOverBottleNeedsCrossOver:
@@ -300,10 +304,25 @@ struct LaunchPlanner {
         // Read by Rosetta (macOS 15+), so it applies to every x86_64 engine.
         if s.advertiseAVX { env["ROSETTA_ADVERTISE_AVX"] = "1" }
         if engine.supports(.d3dMetal), let dxr = rayTracingValue { env["D3DM_SUPPORT_DXR"] = dxr }
-        if active?.layer == .dxmt { env.merge(dxmtEnvironment()) { _, new in new } }
+        switch active?.layer {
+        case .dxmt:
+            env.merge(dxmtEnvironment()) { _, new in new }
+        case .dxvk:
+            // Compile shaders in the background instead of freezing the frame
+            // that first needs them (the bundled DXVK-macOS build supports it).
+            env["DXVK_ASYNC"] = "1"
+            if !s.debugLogging { env["DXVK_LOG_LEVEL"] = Self.quietLayerLogLevel }
+        case nil:
+            break
+        }
         for (key, value) in custom where key != "WINEDLLOVERRIDES" { env[key] = value }
         return env
     }
+
+    /// Graphics layers log every warning into the run log by default, which
+    /// some games trigger each frame. Outside detailed logging only errors
+    /// are kept.
+    static let quietLayerLogLevel = "error"
 
     /// DXMT's MetalFX output upscaling and frame cap, from the bottle's settings.
     func dxmtEnvironment() -> [String: String] {
@@ -317,6 +336,7 @@ struct LaunchPlanner {
         }
         if s.frameRateLimit > 0 { config.append("d3d11.preferredMaxFrameRate=\(s.frameRateLimit)") }
         if !config.isEmpty { env["DXMT_CONFIG"] = config.map { $0 + ";" }.joined() }
+        if !s.debugLogging { env["DXMT_LOG_LEVEL"] = Self.quietLayerLogLevel }
         return env
     }
 

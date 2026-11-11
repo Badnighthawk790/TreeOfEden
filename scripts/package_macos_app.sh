@@ -91,6 +91,10 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>Steam X Bridge</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.games</string>
+  <key>LSSupportsGameMode</key>
+  <true/>
+  <key>GCSupportsGameMode</key>
+  <true/>
   <key>NSHumanReadableCopyright</key>
   <string>Includes Wine and other open-source software; see THIRD_PARTY_NOTICES.md in the app's Resources.</string>
   <key>NSMicrophoneUsageDescription</key>

@@ -4,7 +4,9 @@ SteamXBridge is rebuilt around **bottles**: self-contained Windows environments 
 
 ### New
 - **Built-in engine.** Wine 11.0 with DXMT 0.80 (Direct3D 10/11 on Metal) and DXVK 1.10.3, unpacked on first launch. New bottles use it by default.
-- **MetalFX upscaling and a frame-rate cap** for DXMT games.
+- **MetalFX upscaling and a frame-rate limit** for DXMT games. Only limits your display can pace evenly are offered.
+- **Tuned for slower Macs** (base M1/M2 and the MacBook Neo's A18 Pro): new bottles start with MetalFX 2× and a frame-rate limit at the display's refresh rate; games start at interactive priority; graphics layers log only errors; and the app warns about Low Power Mode, heat and other things that slow games down. See "Slower Macs" in the README.
+- **Checked on macOS 26 before every build**: the packaged app is started and sets up its engine, a new bottle is created, and a Direct3D 11 test program renders a frame through DXMT.
 - **Bottles.** Create, add, duplicate and remove bottles, and keep them between launches. With CrossOver installed, new bottles are created by CrossOver's own tool.
 - **Existing bottles.** CrossOver bottles, Whisky bottles (original and fork), Sikarugir wrappers and Wine/GPTK prefixes are found and can be added without being moved.
 - **One-click Steam.** Downloads the official Windows Steam installer and installs it into the bottle. Games are found in every Steam library, including other drives, and launch through Steam, so DRM works.
@@ -35,5 +37,8 @@ SteamXBridge is rebuilt around **bottles**: self-contained Windows environments 
 ### Third-party software
 The built-in engine is the community Whisky fork's runtime (WhiskyWine Libraries 3.1.1), bundled unmodified. Licenses and source links: THIRD_PARTY_NOTICES.md in the app's Resources.
 
-### First launch
-This build is ad-hoc signed, not notarized. Open it once, then go to **System Settings > Privacy & Security** and click **Open Anyway**. Alternatively, run `xattr -dr com.apple.quarantine /Applications/SteamXBridge.app`.
+### Install and first launch
+1. Download `SteamXBridge-macOS.zip` below, unzip it and move **SteamXBridge.app** to Applications.
+2. Open it. macOS blocks the first launch because the app is not notarized: click **Done**, open **System Settings > Privacy & Security**, scroll to **Security** and click **Open Anyway**. (Or run `xattr -dr com.apple.quarantine /Applications/SteamXBridge.app` in Terminal.)
+3. If the app asks for **Rosetta 2**, click **Install Rosetta 2**.
+4. Click **New Bottle…** and **Create**; Steam installs into the bottle and opens.

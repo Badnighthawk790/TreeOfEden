@@ -97,8 +97,9 @@ struct BottleSettings: Codable, Equatable {
     /// DXMT only: upscale the game's output with MetalFX, so it can render at
     /// a lower resolution than the display.
     var metalFXUpscaling = false
-    /// How much MetalFX enlarges the game's output (1.0-2.0).
-    var metalFXScale = 1.5
+    /// How much MetalFX enlarges the game's output (1.0-2.0). 2 matches a
+    /// Retina display pixel for pixel while High Resolution Mode is off.
+    var metalFXScale = 2.0
     /// DXMT only: frame-rate cap; 0 is off. Saves heat and battery on fanless Macs.
     var frameRateLimit = 0
     /// Ask Rosetta to advertise AVX/AVX2 to x86 programs (macOS 15 and later).

@@ -9,6 +9,8 @@ struct NewBottleSheet: View {
     @State private var engineID: String?
     @State private var windowsVersion: WindowsVersion = .win10
     @State private var installSteam = true
+    /// Start the bottle with the settings recommended for slower Macs.
+    @State private var optimize = false
 
     private var engines: [WineEngine] { AppModel.ordered(model.engines) }
     private var engine: WineEngine? { engines.first { $0.id == engineID } ?? engines.first }
@@ -40,6 +42,12 @@ struct NewBottleSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Toggle("Optimize for this Mac", isOn: $optimize)
+                    Text(model.gpu.isEntryLevel
+                         ? "Recommended on \(model.gpu.marketingName): MetalFX upscaling for a sharp picture at a lower render resolution, and a frame-rate limit that keeps the Mac cool. You can change both in the bottle's Settings."
+                         : "For slower Macs: MetalFX upscaling and a frame-rate limit at the display's refresh rate.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     if crossOverNameTaken {
                         Text("CrossOver already has a bottle named \"\(name)\". Choose another name, or add that bottle from the sidebar.")
                             .font(.caption)
@@ -68,7 +76,7 @@ struct NewBottleSheet: View {
                 Button("Create") {
                     guard let engine else { return }
                     model.createBottle(named: name, engine: engine, windowsVersion: windowsVersion,
-                                       installSteam: installSteam && steamSupported)
+                                       installSteam: installSteam && steamSupported, optimize: optimize)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -79,6 +87,7 @@ struct NewBottleSheet: View {
         .padding(20)
         .frame(width: 520)
         .onAppear {
+            optimize = model.gpu.isEntryLevel
             // Suggest a name that does not clash with an existing CrossOver bottle.
             if model.crossOverBottleExists(named: name) {
                 name = (2...99).map { "Steam \($0)" }.first { !model.crossOverBottleExists(named: $0) } ?? name
@@ -142,10 +151,8 @@ struct EnginesSettingsView: View {
                 }
             }
 
-            if !Rosetta.isInstalled, model.engines.contains(where: \.needsRosetta) {
-                Label("Rosetta 2 is not installed, and these engines need it. Run \"\(Rosetta.installCommand)\" in Terminal.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+            if !model.rosettaInstalled, model.engines.contains(where: \.needsRosetta) {
+                RosettaNotice()
             }
 
             HStack {

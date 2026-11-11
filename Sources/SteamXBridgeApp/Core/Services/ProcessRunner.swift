@@ -62,7 +62,9 @@ struct ProcessRunner {
         logURL: URL,
         onExit: (@Sendable (Int32) -> Void)? = nil
     ) throws -> Process {
-        let (process, handle) = try makeProcess(invocation, logURL: logURL)
+        // A game is what the user is looking at: it must never be scheduled as
+        // background work, which macOS keeps on the efficiency cores.
+        let (process, handle) = try makeProcess(invocation, logURL: logURL, qualityOfService: .userInteractive)
         process.terminationHandler = { finished in
             Self.appendFooter(to: logURL, status: finished.terminationStatus)
             onExit?(finished.terminationStatus)
@@ -84,7 +86,7 @@ struct ProcessRunner {
     func run(_ invocation: WineInvocation, logURL: URL? = nil, timeout: TimeInterval = 300) async throws -> RunResult {
         let log = logURL ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("steamxbridge-\(UUID().uuidString).log")
-        let (process, handle) = try makeProcess(invocation, logURL: log)
+        let (process, handle) = try makeProcess(invocation, logURL: log, qualityOfService: .userInitiated)
         let timeoutFlag = Flag()
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -164,7 +166,8 @@ struct ProcessRunner {
         }
     }
 
-    private func makeProcess(_ invocation: WineInvocation, logURL: URL) throws -> (Process, FileHandle) {
+    private func makeProcess(_ invocation: WineInvocation, logURL: URL,
+                             qualityOfService: QualityOfService) throws -> (Process, FileHandle) {
         try preflight(invocation)
         let fm = FileManager.default
         try fm.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -186,6 +189,7 @@ struct ProcessRunner {
         environment.merge(invocation.environment) { _, new in new }
         process.environment = environment
         if let cwd = invocation.workingDirectory { process.currentDirectoryURL = cwd }
+        process.qualityOfService = qualityOfService
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = handle
         process.standardError = handle

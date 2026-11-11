@@ -97,6 +97,8 @@ final class LaunchPlannerTests: XCTestCase {
                        "winemetal must stay builtin to reach Metal")
         XCTAssertNil(env()["DXMT_METALFX_SPATIAL_SWAPCHAIN"])
         XCTAssertNil(env()["WINEMSYNC"], "the built-in engine has no MSync")
+        XCTAssertEqual(env()["DXMT_LOG_LEVEL"], "error", "per-frame warnings stay out of the run log")
+        XCTAssertEqual(BottleSettings().metalFXScale, 2.0, "pixel-exact on a Retina display")
 
         bottle.settings.metalFXUpscaling = true
         bottle.settings.metalFXScale = 3
@@ -108,8 +110,21 @@ final class LaunchPlannerTests: XCTestCase {
         bottle.settings.graphics = .wineD3D
         XCTAssertEqual(env()["WINEDLLOVERRIDES"], "winemenubuilder.exe=d")
         XCTAssertNil(env()["DXMT_CONFIG"], "DXMT options only apply where DXMT runs")
+        XCTAssertNil(env()["DXMT_LOG_LEVEL"])
         bottle.settings.graphics = .dxvk
         XCTAssertEqual(env()["WINEDLLOVERRIDES"], "winemenubuilder.exe=d;d3d10core,d3d11=n,b")
+        XCTAssertEqual(env()["DXVK_ASYNC"], "1", "shaders compile in the background instead of stalling frames")
+        XCTAssertEqual(env()["DXVK_LOG_LEVEL"], "error")
+
+        // Detailed logging brings the layers' own messages back.
+        bottle.settings.debugLogging = true
+        XCTAssertNil(env()["DXVK_LOG_LEVEL"])
+        bottle.settings.graphics = .automatic
+        XCTAssertNil(env()["DXMT_LOG_LEVEL"])
+        // A custom variable still wins.
+        bottle.settings.graphics = .dxvk
+        bottle.settings.environment = [EnvironmentVariable(name: "DXVK_ASYNC", value: "0")]
+        XCTAssertEqual(env()["DXVK_ASYNC"], "0")
     }
 
     func testCrossOverGetsDXMTOptionsOnlyWithDXMTSelected() throws {

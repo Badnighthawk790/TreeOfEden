@@ -112,8 +112,8 @@ struct BottleSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("This Mac's GPU — \(model.gpu.marketingName)") {
-                    Text(model.gpu.classLabel)
+                Section("This Mac — \(model.gpu.marketingName)") {
+                    Text([model.gpu.classLabel, model.system.summary].filter { !$0.isEmpty }.joined(separator: " · "))
                         .foregroundStyle(.secondary)
                     ForEach(model.gpu.featureStatuses) { status in
                         HStack(alignment: .top, spacing: 8) {
@@ -207,16 +207,18 @@ struct BottleSettingsView: View {
                         }
                     }
                 }
-                Text("Set the game to a lower resolution; MetalFX enlarges every frame to fit the window. 1.5× turns 1280×800 into 1920×1200.")
+                Text(metalFXExplanation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Picker("Frame rate limit", selection: draftBinding.settings.frameRateLimit) {
                     Text("Off").tag(0)
-                    ForEach([30, 40, 45, 60], id: \.self) { Text("\($0) fps").tag($0) }
+                    ForEach(frameRateChoices, id: \.self) { Text(frameRateLabel($0)).tag($0) }
                 }
-                Text("A steady cap keeps a fanless MacBook Air cooler, so it holds its speed for longer.")
+                Text("DXMT does not wait for the display on its own, so menus and light scenes can run at hundreds of frames per second. A limit stops that heat, and a fanless Mac holds its speed for longer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if engine.supports(.dlssMetalFX) {
@@ -248,11 +250,71 @@ struct BottleSettingsView: View {
 
     /// True when the draft's renderer is DXMT, whose own upscaler and frame cap apply.
     private func runsDXMT(_ engine: WineEngine) -> Bool {
-        engine.isCrossOver ? draft.settings.graphics == .dxmt : engine.layer(for: draft.settings.graphics)?.layer == .dxmt
+        PerformanceTuning.runsDXMT(draft.settings, engine: engine)
+    }
+
+    /// Limits this display can pace evenly, plus the bottle's own value when
+    /// it was chosen on another display.
+    private var frameRateChoices: [Int] {
+        let choices = FrameRateCap.choices(refreshRate: model.display.refreshRate)
+        let current = draft.settings.frameRateLimit
+        return current > 0 && !choices.contains(current) ? (choices + [current]).sorted() : choices
+    }
+
+    private func frameRateLabel(_ limit: Int) -> String {
+        let refresh = model.display.refreshRate
+        let effective = FrameRateCap.effectiveRate(limit: limit, refreshRate: refresh)
+        if effective != limit { return "\(limit) fps (runs at \(effective) on this \(refresh) Hz display)" }
+        return limit == refresh ? "\(limit) fps (this display's refresh rate)" : "\(limit) fps"
+    }
+
+    /// What the upscale factor does on this display, in its own numbers.
+    private var metalFXExplanation: String {
+        let display = model.display
+        let scale = draft.settings.metalFXScale
+        var text = "The game renders at the resolution you choose in it, and MetalFX enlarges each frame by this factor."
+        if display.isRetina, display.width > 0 {
+            let w = Int((Double(display.width) * scale).rounded()), h = Int((Double(display.height) * scale).rounded())
+            text += " On this display, 2× is pixel-exact: a game at \(display.width)×\(display.height) comes out at \(display.width * 2)×\(display.height * 2)."
+            if scale != 2 { text += " At \(String(format: "%.2f", scale))× it comes out at \(w)×\(h) and macOS scales the rest." }
+            text += " For more speed, pick a lower resolution in the game."
+        } else if !display.isRetina {
+            text += " This display is not Retina, so upscaling only helps when the game runs below the display's resolution."
+        }
+        return text
+    }
+
+    /// The settings recommended for this Mac, when the draft differs from them.
+    private func optimizedSettings(_ engine: WineEngine) -> BottleSettings? {
+        let optimized = PerformanceTuning.optimized(draft.settings, engine: engine, display: model.display)
+        return optimized == draft.settings ? nil : optimized
     }
 
     private func performanceSection(_ engine: WineEngine) -> some View {
         Section("Performance") {
+            if let optimized = optimizedSettings(engine) {
+                Button("Optimize for This Mac") { updateDraft { $0.settings = optimized } }
+                Text(model.gpu.isEntryLevel
+                     ? "Recommended on this Mac: MetalFX upscaling at 2×, a frame-rate limit at the display's refresh rate, and High Resolution Mode and detailed logging off. Review the changes, then click Apply."
+                     : "Sets MetalFX upscaling at 2×, a frame-rate limit at the display's refresh rate, and High Resolution Mode and detailed logging off. Meant for slower Macs; review the changes, then click Apply.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(model.performanceNotes(for: bottle, settings: draft.settings)) { note in
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(note.title)
+                        Text(note.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } icon: {
+                    Image(systemName: note.kind == .warning ? "exclamationmark.triangle.fill" : "lightbulb")
+                        .foregroundStyle(note.kind == .warning ? Color.orange : Color.secondary)
+                }
+            }
             if engine.supports(.msync) {
                 Toggle("MSync", isOn: draftBinding.settings.msync)
             }

@@ -39,6 +39,7 @@ Every engine, the built-in one included, is x86_64 and needs **Rosetta 2** (`sof
 
 - **Anti-cheat**: games whose anti-cheat (GameGuard, Easy Anti-Cheat, BattlEye) only works with CodeWeavers' patches need CrossOver. That includes HELLDIVERS 2.
 - **DirectX 12-only games**: they need D3DMetal, which Apple's license does not let SteamXBridge redistribute. Use CrossOver, or a game's DirectX 11 mode when it has one.
+- **DirectX 9 and older, and the DXVK renderer**, rely on Wine's own graphics code. It did not start on our macOS test machine, which has a virtual GPU, so these are untested; DirectX 10/11 through DXMT is the path every build is tested on.
 - **In-game videos** played through Windows Media Foundation need the free [GStreamer runtime](https://gstreamer.freedesktop.org/download/) installed in /Library/Frameworks; the engine finds it there.
 - **Steam's window** can render black on plain Wine (its web view, steamwebhelper). Turn on **Steam compatibility switches** in the bottle's settings if it does.
 
@@ -56,15 +57,42 @@ Setup:
 
 ## Apple Silicon GPU features
 
-SteamXBridge reads your chip (M1 through M5 and later) and shows which GPU features it really has. Dynamic Caching, hardware ray tracing and hardware mesh shading arrived with M3. They are silicon, and software cannot add them to an M1/M2, so ray tracing stays off there instead of falling back to slow emulation. The practical lever on any Apple Silicon Mac is upscaling: on the built-in engine, turn on **MetalFX upscaling** and lower the game's resolution; on CrossOver 26 (macOS 26), enable **DLSS powered by MetalFX** and pick DLSS in the game; or use the game's own FSR/XeSS.
+SteamXBridge reads your chip (M1 through M5 and later, and A-series Macs such as the MacBook Neo's A18 Pro) and shows which GPU features it really has. Hardware ray tracing and hardware mesh shading arrived with M3 and A17 Pro. They are silicon, and software cannot add them to an M1/M2, so ray tracing stays off there instead of falling back to slow emulation. The practical lever on any Apple Silicon Mac is upscaling: on the built-in engine, turn on **MetalFX upscaling** and lower the game's resolution; on CrossOver 26 (macOS 26), enable **DLSS powered by MetalFX** and pick DLSS in the game; or use the game's own FSR/XeSS.
+
+## Slower Macs: base M1, base M2 and the MacBook Neo
+
+These Macs have the least graphics power (7 to 10 GPU cores on a base M1/M2, 5 on the MacBook Neo's A18 Pro), usually 8 GB of memory, and no fan. The MacBook Neo also has only two performance cores. SteamXBridge treats them as *entry-level* and tunes for them.
+
+What the app does:
+
+- **New bottles start optimized** (the **Optimize for this Mac** switch in New Bottle; **Optimize for This Mac** in a bottle's Settings does the same later):
+  - **MetalFX upscaling at 2×.** With High Resolution Mode off, a game renders at the desktop's point size (1440×900 on a MacBook Air) and macOS would stretch that soft image over the Retina panel. MetalFX turns it into a sharp full-resolution picture instead. 2× is pixel-exact on a Retina display; the Settings tab shows the numbers for yours.
+  - **A frame-rate limit at the display's refresh rate.** DXMT does not wait for the display by itself, so menus and light scenes run at hundreds of frames per second, and a fanless Mac heats up and slows down before the game needs the power. Only limits the display can pace evenly are offered (30 and 60 on a 60 Hz panel; 40 fps would really run at 30).
+  - High Resolution Mode (four times the pixels) and detailed logging off.
+- **Games start at interactive priority**, so macOS never schedules them as background work on the efficiency cores, and the app declares Game Mode support.
+- **Quiet graphics logging.** DXMT and DXVK write only errors to the run log unless detailed logging is on; some games otherwise log a warning every frame. With DXVK, shaders compile in the background instead of freezing the frame that needs them.
+- **Warnings when macOS is holding the Mac back**: Low Power Mode, heat, High Resolution Mode on an entry-level GPU, or detailed logging left on. Tips in Settings cover the 8 GB memory limit and the two performance cores.
+- **The app itself stays out of the way**: it has no timers or polling while you play, and old run logs are pruned.
+
+What you can do for more speed:
+
+1. Lower the **in-game resolution**. With MetalFX 2× on a MacBook Air, 1280×800 comes out at the panel's native 2560×1600; 1152×720 or 960×600 are faster still and remain sharp.
+2. Use the game's **DirectX 11** mode, low or medium textures and shadows, and turn ray tracing off.
+3. Set the frame-rate limit to **30** for heavy games: a steady 30 feels better than 35–50 that keeps changing, and the Mac stays cooler.
+4. Quit browsers and other apps, pause Steam downloads, and turn **Low Power Mode** off.
+
+What is not available on the built-in engine: MSync (faster multi-threading; CrossOver has it), D3DMetal for DirectX 12, and anti-cheat. Expect light and older 3D games, indie titles and 2D games to run well, and big recent releases to need low settings or not to be playable at all on 8 GB.
 
 ## Install
 
-1. Download `SteamXBridge-macOS.zip` (about 340 MB, as it carries the Windows engine) from a release or from a CI run's artifacts, unzip it, and move **SteamXBridge.app** to /Applications. On first launch it unpacks the engine (about 900 MB) into Application Support.
-2. The app is ad-hoc signed, not notarized, so macOS blocks the first launch. Since macOS 15, Control-click > Open no longer bypasses this. Instead:
-   - Open the app once and dismiss the warning.
-   - Go to **System Settings > Privacy & Security**, scroll to Security and click **Open Anyway**, then confirm.
-   - Alternatively, run `xattr -dr com.apple.quarantine /Applications/SteamXBridge.app` in Terminal.
+1. Download `SteamXBridge-macOS.zip` (about 330 MB, as it carries the Windows engine) from the [releases page](../../releases). Safari unzips it for you; otherwise double-click the zip. Move **SteamXBridge.app** to your Applications folder.
+2. Open it. The app is not notarized by Apple, so macOS blocks the first launch with "Apple could not verify…". Click **Done**, then:
+   - Open **System Settings > Privacy & Security**, scroll down to **Security**, and click **Open Anyway** next to SteamXBridge. Confirm with your password or Touch ID. This is needed only once.
+   - Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/SteamXBridge.app`
+3. On first launch the app unpacks its Windows engine (about 840 MB, under a minute). If it says the engine needs **Rosetta 2**, click **Install Rosetta 2**; that is Apple's free translator for Intel software and takes a minute or two.
+4. Click **New Bottle…**, keep **Install Steam** on, and click **Create**. Creating a bottle takes about a minute; Steam then installs and opens.
+
+Every build is checked on macOS 26 before it is published: the packaged app is started, sets up its engine, creates a bottle and renders a Direct3D 11 frame.
 
 ## Build from source
 

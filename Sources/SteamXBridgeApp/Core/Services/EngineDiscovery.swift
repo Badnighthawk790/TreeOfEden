@@ -311,4 +311,20 @@ enum Rosetta {
     }
 
     static let installCommand = "softwareupdate --install-rosetta --agree-to-license"
+
+    /// Apple's own installer for Rosetta. macOS offers Rosetta by itself only
+    /// when an Intel app is opened from Finder, never for an engine that an
+    /// app starts, so a new Mac needs this once.
+    static var installInvocation: WineInvocation {
+        WineInvocation(executable: URL(fileURLWithPath: "/usr/sbin/softwareupdate"),
+                       arguments: ["--install-rosetta", "--agree-to-license"],
+                       environment: [:], workingDirectory: nil, displayName: "Install Rosetta 2")
+    }
+
+    /// The installer's own words from a run's output (without the log header).
+    static func installerMessage(from output: String) -> String {
+        output.split(separator: "\n").map(String.init)
+            .filter { !$0.hasPrefix("#") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .suffix(6).joined(separator: "\n")
+    }
 }
