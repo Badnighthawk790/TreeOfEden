@@ -192,6 +192,8 @@ struct BottleStore {
         if fm.fileExists(atPath: metadata.path) {
             try fm.removeItem(at: metadata)
         }
+        // Its run logs are of no use without the bottle.
+        try? fm.removeItem(at: logsDirectory.appendingPathComponent(bottle.id.uuidString, isDirectory: true))
     }
 
     /// Only a real (non-symlink) folder directly inside Prefixes, that still
@@ -241,6 +243,34 @@ struct BottleStore {
         return Array(files.filter { $0.pathExtension == "log" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
             .prefix(limit))
+    }
+
+    /// Deletes a bottle's oldest run logs, keeping the newest `keep` and, of
+    /// those, only as many as fit in `maxBytes` (always at least `minimum`).
+    /// Logs in `protected` (programs still running) are never deleted. Run
+    /// logs pile up with every launch, and detailed Wine logging makes them
+    /// large. Returns the logs removed.
+    @discardableResult
+    func pruneLogs(for bottle: Bottle, keep: Int = 40, maxBytes: Int64 = 256 << 20, minimum: Int = 5,
+                   protected: Set<URL> = []) -> [URL] {
+        let fm = FileManager.default
+        let folder = logsDirectory.appendingPathComponent(bottle.id.uuidString, isDirectory: true)
+        let files = ((try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey])) ?? [])
+            .filter { $0.pathExtension == "log" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent } // newest first: names start with the date
+        let keepPaths = Set(protected.map { $0.standardizedFileURL.path })
+        var removed: [URL] = []
+        var total: Int64 = 0
+        for (index, file) in files.enumerated() {
+            let size = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            let fits = index < minimum || (index < keep && total + size <= maxBytes)
+            if fits || keepPaths.contains(file.standardizedFileURL.path) {
+                total += size
+            } else if (try? fm.removeItem(at: file)) != nil {
+                removed.append(file)
+            }
+        }
+        return removed
     }
 
     // MARK: Helpers

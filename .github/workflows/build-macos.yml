@@ -46,3 +46,35 @@ jobs:
           name: SteamXBridge-macOS
           path: dist/SteamXBridge-macOS.zip
           if-no-files-found: error
+
+      # From here on the build is checked the way a user meets it: the app is
+      # started, and the bundled engine runs real Windows programs.
+      - name: Launch the packaged app (first-launch setup)
+        run: ./scripts/ci_launch_app.sh
+
+      - name: Upload first-launch screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: first-launch-screenshot
+          path: ${{ runner.temp }}/steamxbridge-first-launch.png
+          if-no-files-found: ignore
+
+      - name: Ensure Rosetta 2
+        run: |
+          if [ ! -e /Library/Apple/usr/libexec/oah/libRosettaRuntime ]; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Build the Direct3D 11 probe
+        run: |
+          brew install mingw-w64
+          x86_64-w64-mingw32-gcc -O2 -Wall -o "$RUNNER_TEMP/d3d11probe.exe" \
+            Tests/EngineSmoke/d3d11probe.c -ld3d11 -ldxgi -ldxguid -luuid
+
+      - name: Engine smoke test (Wine under Rosetta, Direct3D 11 on each layer)
+        env:
+          SXB_ENGINE_SMOKE: "1"
+          SXB_RUNTIME_SOURCE: dist/SteamXBridge.app/Contents/Resources/Runtime
+          SXB_D3D11_PROBE: ${{ runner.temp }}/d3d11probe.exe
+        run: swift test --filter EngineSmokeTests

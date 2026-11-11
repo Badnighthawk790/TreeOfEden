@@ -357,6 +357,38 @@ final class BottleStoreTests: XCTestCase {
         XCTAssertEqual(BottleStore.logTitle(for: URL(fileURLWithPath: "/l/odd.log")), "odd")
     }
 
+    func testOldAndOversizedLogsArePruned() throws {
+        let tmp = try TemporaryDirectory()
+        let store = BottleStore(root: tmp.url.appendingPathComponent("store"), deletesToTrash: false)
+        let bottle = try store.createBottle(named: "Games")
+        let folder = store.logsDirectory.appendingPathComponent(bottle.id.uuidString)
+        func log(_ day: Int, bytes: Int = 10) throws -> URL {
+            let url = folder.appendingPathComponent(String(format: "2026-11-%02dT10-00-00-game-abcd.log", day))
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data(repeating: 0x41, count: bytes).write(to: url)
+            return url
+        }
+        let logs = try (1...8).map { try log($0) }
+        try Data().write(to: folder.appendingPathComponent("notes.txt"))
+
+        // Count: the newest three stay, plus an older one that is still running.
+        let removed = store.pruneLogs(for: bottle, keep: 3, minimum: 1, protected: [logs[0]])
+        XCTAssertEqual(Set(removed.map(\.lastPathComponent)), Set(logs[1...4].map(\.lastPathComponent)))
+        XCTAssertEqual(store.logs(for: bottle).map(\.lastPathComponent),
+                       [logs[7], logs[6], logs[5], logs[0]].map(\.lastPathComponent))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes.txt").path), "only .log files are pruned")
+
+        // Size: a huge debug log pushes older ones out, but the newest always stay.
+        let big = try log(20, bytes: 5_000)
+        let newest = try log(21)
+        store.pruneLogs(for: bottle, keep: 40, maxBytes: 1_000, minimum: 2)
+        XCTAssertEqual(store.logs(for: bottle).map(\.lastPathComponent), [newest, big].map(\.lastPathComponent))
+
+        // Removing the bottle takes its logs along.
+        try store.remove(bottle)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+    }
+
     func testLogLocations() throws {
         let tmp = try TemporaryDirectory()
         let store = BottleStore(root: tmp.url, deletesToTrash: false)
